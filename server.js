@@ -3,28 +3,13 @@
 // Receives detections, stores in database,
 // generates reports automatically
 // ============================================
-const fs = require('fs');
 
-// Initialize database tables
-async function initializeDatabase() {
-  try {
-    const sql = fs.readFileSync('./init.sql', 'utf8');
-    await pool.query(sql);
-    console.log('Database tables initialized');
-  } catch (error) {
-    console.error('Error initializing database:', error);
-  }
-}
-
-// Call on startup
-initializeDatabase();
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const nodemailer = require('nodemailer');
 const schedule = require('node-schedule');
-const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 
@@ -49,11 +34,30 @@ pool.query('SELECT NOW()', (err, res) => {
   }
 });
 
+// Initialize database tables
+async function initializeDatabase() {
+  try {
+    const sql = fs.readFileSync('./init.sql', 'utf8');
+    await pool.query(sql);
+    console.log('Database tables initialized');
+  } catch (error) {
+    console.error('Error initializing database:', error);
+  }
+}
+
+// Call on startup
+initializeDatabase();
+
 // ============================================
 // ENDPOINTS
 // ============================================
 
-// 1. Receive detection from extension
+// 1. Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'OK', message: 'AI-Shield Backend is running' });
+});
+
+// 2. Receive detection from extension
 app.post('/api/detection', async (req, res) => {
   const { userId, companyId, detectionType, aiPlatform, timestamp } = req.body;
   
@@ -70,7 +74,7 @@ app.post('/api/detection', async (req, res) => {
   }
 });
 
-// 2. Get report for company
+// 3. Get report for company
 app.get('/api/report/:companyId/:month/:year', async (req, res) => {
   const { companyId, month, year } = req.params;
   
@@ -102,7 +106,7 @@ app.get('/api/report/:companyId/:month/:year', async (req, res) => {
   }
 });
 
-// 3. Get all detections for company
+// 4. Get all detections for company
 app.get('/api/detections/:companyId', async (req, res) => {
   const { companyId } = req.params;
   
@@ -119,10 +123,11 @@ app.get('/api/detections/:companyId', async (req, res) => {
   }
 });
 
-// 4. Create company
+// 5. Create company
 app.post('/api/companies', async (req, res) => {
   const { name, adminEmail, plan } = req.body;
-  const companyId = require('crypto').randomUUID();
+  const crypto = require('crypto');
+  const companyId = crypto.randomUUID();
   
   try {
     await pool.query(
@@ -134,6 +139,132 @@ app.post('/api/companies', async (req, res) => {
   } catch (error) {
     console.error('Error creating company:', error);
     res.status(500).json({ error: 'Failed to create company' });
+  }
+});
+
+// ============================================
+// STRIPE ENDPOINTS
+// ============================================
+
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY || 'sk_test_dummy');
+
+// Create checkout session
+app.post('/api/checkout', async (req, res) => {
+  const { priceId, email, companyName } = req.body;
+  
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price: priceId,
+          quantity: 1
+        }
+      ],
+      mode: 'subscription',
+      success_url: 'https://aishield.eu/success?session_id={CHECKOUT_SESSION_ID}',
+      cancel_url: 'https://aishield.eu/cancel',
+      customer_email: email,
+      metadata: {
+        companyName: companyName
+      }
+    } );
+    
+    res.json({ sessionId: session.id, url: session.url });
+  } catch (error) {
+    console.error('Error creating checkout session:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Webhook handler
+app.post('/api/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  
+  try {
+    const event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET || 'whsec_test_dummy'
+    );
+    
+    // Handle subscription created
+    if (event.type === 'customer.subscription.created') {
+      const subscription = event.data.object;
+      const customer = await stripe.customers.retrieve(subscription.customer);
+      
+      // Create company in database
+      const crypto = require('crypto');
+      const companyId = crypto.randomUUID();
+      await pool.query(
+        'INSERT INTO companies (id, name, admin_email, plan, stripe_customer_id, stripe_subscription_id, active) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [
+          companyId,
+          customer.metadata?.companyName || customer.email,
+          customer.email,
+          subscription.items.data[0].price.nickname || 'team',
+          subscription.customer,
+          subscription.id,
+          true
+        ]
+      );
+      
+      console.log('Subscription created:', subscription.id);
+    }
+    
+    // Handle subscription updated
+    if (event.type === 'customer.subscription.updated') {
+      const subscription = event.data.object;
+      await pool.query(
+        'UPDATE companies SET stripe_subscription_id = $1 WHERE stripe_customer_id = $2',
+        [subscription.id, subscription.customer]
+      );
+      console.log('Subscription updated:', subscription.id);
+    }
+    
+    // Handle subscription deleted
+    if (event.type === 'customer.subscription.deleted') {
+      const subscription = event.data.object;
+      await pool.query(
+        'UPDATE companies SET active = false WHERE stripe_subscription_id = $1',
+        [subscription.id]
+      );
+      console.log('Subscription deleted:', subscription.id);
+    }
+    
+    res.json({received: true});
+  } catch (error) {
+    console.error('Webhook error:', error);
+    res.status(400).send(`Webhook Error: ${error.message}`);
+  }
+});
+
+// Get subscription status
+app.get('/api/subscription/:companyId', async (req, res) => {
+  const { companyId } = req.params;
+  
+  try {
+    const company = await pool.query(
+      'SELECT * FROM companies WHERE id = $1',
+      [companyId]
+    );
+    
+    if (company.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+    
+    const subscription = await stripe.subscriptions.retrieve(
+      company.rows[0].stripe_subscription_id
+    );
+    
+    res.json({
+      status: subscription.status,
+      currentPeriodEnd: subscription.current_period_end,
+      plan: subscription.items.data[0].price.nickname
+    });
+  } catch (error) {
+    console.error('Error fetching subscription:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
