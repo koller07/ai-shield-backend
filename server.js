@@ -3,7 +3,21 @@
 // Receives detections, stores in database,
 // generates reports automatically
 // ============================================
+const fs = require('fs');
 
+// Initialize database tables
+async function initializeDatabase() {
+  try {
+    const sql = fs.readFileSync('./init.sql', 'utf8');
+    await pool.query(sql);
+    console.log('Database tables initialized');
+  } catch (error) {
+    console.error('Error initializing database:', error);
+  }
+}
+
+// Call on startup
+initializeDatabase();
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
