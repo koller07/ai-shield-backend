@@ -1,7 +1,6 @@
 // ============================================
-// AI-SHIELD BACKEND SERVER
-// Receives detections, stores in database,
-// generates reports automatically
+// IA SHIELD BACKEND - CORRIGIDO
+// By Koller Group
 // ============================================
 
 const express = require('express');
@@ -10,175 +9,419 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const nodemailer = require('nodemailer');
 const schedule = require('node-schedule');
-const fs = require('fs');
-const path = require('path');
+const crypto = require('crypto');
 
 dotenv.config();
 
 const app = express();
+
+// Middleware especial para webhook do Stripe (precisa vir ANTES do express.json())
+app.use('/api/webhook', express.raw({type: 'application/json'}));
+
+// Middleware padrão
 app.use(express.json());
 app.use(cors());
 
-// Database connection
+// ============================================
+// CONEXÃO COM BANCO DE DADOS
+// ============================================
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// Test database connection
+// Testar conexão
 pool.query('SELECT NOW()', (err, res) => {
   if (err) {
-    console.error('Database connection error:', err);
+    console.error('❌ Erro ao conectar banco de dados:', err);
   } else {
-    console.log('Database connected:', res.rows[0]);
+    console.log('✅ Banco de dados conectado:', res.rows[0].now);
   }
 });
 
-// Initialize database tables
+// Inicializar tabelas
 async function initializeDatabase() {
   try {
+    const fs = require('fs');
     const sql = fs.readFileSync('./init.sql', 'utf8');
     await pool.query(sql);
-    console.log('Database tables initialized');
+    console.log('✅ Tabelas do banco de dados inicializadas');
   } catch (error) {
-    console.error('Error initializing database:', error);
+    console.error('❌ Erro ao inicializar banco:', error);
   }
 }
 
-// Call on startup
 initializeDatabase();
 
 // ============================================
-// ENDPOINTS
+// FUNÇÕES AUXILIARES
 // ============================================
 
-// 1. Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'AI-Shield Backend is running' });
-});
+// Gerar API Key única
+function generateApiKey(planType) {
+  const prefix = planType === 'enterprise' ? 'sk_ent' : 
+                 planType === 'team' ? 'sk_team' : 'sk_solo';
+  const randomString = crypto.randomBytes(32).toString('hex');
+  return `${prefix}_${randomString}`;
+}
 
-// 2. Receive detection from extension
-app.post('/api/detection', async (req, res) => {
-  const { userId, companyId, detectionType, aiPlatform, timestamp } = req.body;
+// Mascarar dados sensíveis
+function maskSensitiveData(value, type) {
+  if (!value) return '';
   
-  try {
-    await pool.query(
-      'INSERT INTO detections (user_id, company_id, detection_type, ai_platform, timestamp) VALUES ($1, $2, $3, $4, $5)',
-      [userId, companyId, detectionType, aiPlatform, timestamp]
-    );
+  switch(type.toUpperCase()) {
+    case 'CPF':
+      // 123.456.789-00 → ***.***.789-**
+      return value.replace(/(\d{3})\.(\d{3})\.(\d{3})-(\d{2})/, '***.**.$3-**');
     
-    res.json({ success: true, message: 'Detection recorded' });
-  } catch (error) {
-    console.error('Error saving detection:', error);
-    res.status(500).json({ error: 'Failed to save detection' });
+    case 'CNPJ':
+      // 12.345.678/0001-90 → **.***.***/****-**
+      return value.replace(/(\d{2})\.(\d{3})\.(\d{3})\/(\d{4})-(\d{2})/, '**.***.***/$4-**');
+    
+    case 'EMAIL':
+      // joao@empresa.com → j***@empresa.com
+      const [name, domain] = value.split('@');
+      return `${name[0]}***@${domain}`;
+    
+    case 'CREDIT_CARD':
+      // 4532 1234 5678 9010 → **** **** **** 9010
+      return value.replace(/(\d{4})\s(\d{4})\s(\d{4})\s(\d{4})/, '**** **** **** $4');
+    
+    default:
+      // Mostrar apenas últimos 4 caracteres
+      return '***' + value.slice(-4);
   }
-});
+}
 
-// 3. Get report for company
-app.get('/api/report/:companyId/:month/:year', async (req, res) => {
-  const { companyId, month, year } = req.params;
+// Middleware de autenticação por API Key
+async function authenticateApiKey(req, res, next) {
+  const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
+  
+  if (!apiKey) {
+    return res.status(401).json({ error: 'API Key não fornecida' });
+  }
   
   try {
     const result = await pool.query(
-      `SELECT user_id, detection_type, COUNT(*) as count 
-       FROM detections 
-       WHERE company_id = $1 
-       AND EXTRACT(MONTH FROM timestamp) = $2 
-       AND EXTRACT(YEAR FROM timestamp) = $3 
-       GROUP BY user_id, detection_type
-       ORDER BY count DESC`,
-      [companyId, month, year]
+      'SELECT * FROM companies WHERE api_key = $1 AND is_active = true',
+      [apiKey]
     );
     
-    const totalDetections = result.rows.reduce((sum, row) => sum + parseInt(row.count), 0);
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'API Key inválida ou empresa inativa' });
+    }
     
-    res.json({
-      companyId,
-      month,
-      year,
-      totalDetections,
-      finePrevented: totalDetections * 50000,
-      byUser: result.rows
+    // Adicionar dados da empresa no request
+    req.company = result.rows[0];
+    next();
+  } catch (error) {
+    console.error('Erro ao validar API Key:', error);
+    res.status(500).json({ error: 'Erro ao validar autenticação' });
+  }
+}
+
+// ============================================
+// ENDPOINTS PÚBLICOS (SEM AUTENTICAÇÃO)
+// ============================================
+
+// 1. Health Check
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'IA Shield Backend rodando',
+    version: '2.0.0',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 2. Criar empresa manualmente (para Plano Enterprise - Dashboard Koller)
+app.post('/api/admin/companies', async (req, res) => {
+  const { name, adminEmail, planType, maxUsers, adminPassword } = req.body;
+  
+  // Senha de admin (colocar no .env)
+  if (adminPassword !== process.env.ADMIN_PASSWORD) {
+    return res.status(403).json({ error: 'Senha de administrador inválida' });
+  }
+  
+  try {
+    const apiKey = generateApiKey(planType);
+    
+    const result = await pool.query(
+      `INSERT INTO companies (name, admin_email, plan_type, max_users, api_key) 
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [name, adminEmail, planType, maxUsers || (planType === 'solo' ? 1 : planType === 'team' ? 10 : 999999), apiKey]
+    );
+    
+    // Enviar email com API Key
+    await sendWelcomeEmail(adminEmail, name, apiKey, result.rows[0].id);
+    
+    res.json({ 
+      success: true,
+      company: result.rows[0],
+      message: 'Empresa criada com sucesso. Email enviado com instruções.'
     });
   } catch (error) {
-    console.error('Error generating report:', error);
-    res.status(500).json({ error: 'Failed to generate report' });
+    console.error('Erro ao criar empresa:', error);
+    res.status(500).json({ error: 'Erro ao criar empresa' });
   }
 });
 
-// 4. Get all detections for company
-app.get('/api/detections/:companyId', async (req, res) => {
-  const { companyId } = req.params;
+// ============================================
+// ENDPOINTS PROTEGIDOS (REQUER API KEY)
+// ============================================
+
+// 3. Registrar/Atualizar usuário
+app.post('/api/users/register', authenticateApiKey, async (req, res) => {
+  const { userName, userEmail } = req.body;
+  const companyId = req.company.id;
+  
+  if (!userName || !userEmail) {
+    return res.status(400).json({ error: 'Nome e email são obrigatórios' });
+  }
   
   try {
-    const result = await pool.query(
-      'SELECT * FROM detections WHERE company_id = $1 ORDER BY timestamp DESC LIMIT 100',
+    // Verificar limite de usuários
+    const userCount = await pool.query(
+      'SELECT COUNT(*) FROM users WHERE company_id = $1 AND is_active = true',
       [companyId]
     );
     
-    res.json(result.rows);
+    if (parseInt(userCount.rows[0].count) >= req.company.max_users) {
+      return res.status(403).json({ 
+        error: `Limite de usuários atingido (${req.company.max_users} usuários no plano ${req.company.plan_type})` 
+      });
+    }
+    
+    // Inserir ou atualizar usuário
+    const result = await pool.query(
+      `INSERT INTO users (company_id, user_name, user_email, last_activity)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (company_id, user_email) 
+       DO UPDATE SET user_name = $2, last_activity = NOW(), is_active = true
+       RETURNING *`,
+      [companyId, userName, userEmail]
+    );
+    
+    res.json({ 
+      success: true,
+      user: result.rows[0],
+      message: 'Usuário registrado com sucesso'
+    });
   } catch (error) {
-    console.error('Error fetching detections:', error);
-    res.status(500).json({ error: 'Failed to fetch detections' });
+    console.error('Erro ao registrar usuário:', error);
+    res.status(500).json({ error: 'Erro ao registrar usuário' });
   }
 });
 
-// 5. Create company
-app.post('/api/companies', async (req, res) => {
-  const { name, adminEmail, plan } = req.body;
-  const crypto = require('crypto');
-  const companyId = crypto.randomUUID();
+// 4. Registrar detecção (ROTA CORRIGIDA)
+app.post('/api/detections', authenticateApiKey, async (req, res) => {
+  const { userEmail, detectionType, confidenceLevel, aiPlatform, url, detectedValue } = req.body;
+  const companyId = req.company.id;
   
   try {
-    await pool.query(
-      'INSERT INTO companies (id, name, admin_email, plan) VALUES ($1, $2, $3, $4)',
-      [companyId, name, adminEmail, plan]
+    // Buscar ID do usuário
+    const userResult = await pool.query(
+      'SELECT id FROM users WHERE company_id = $1 AND user_email = $2',
+      [companyId, userEmail]
     );
     
-    res.json({ companyId, message: 'Company created' });
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Usuário não encontrado. Registre o usuário primeiro.' });
+    }
+    
+    const userId = userResult.rows[0].id;
+    const maskedValue = maskSensitiveData(detectedValue, detectionType);
+    
+    // Inserir detecção
+    await pool.query(
+      `INSERT INTO detections 
+       (company_id, user_id, detection_type, confidence_level, ai_platform, url, detected_value_masked, timestamp)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [companyId, userId, detectionType, confidenceLevel, aiPlatform, url, maskedValue, new Date()]
+    );
+    
+    // Atualizar última atividade do usuário
+    await pool.query(
+      'UPDATE users SET last_activity = NOW() WHERE id = $1',
+      [userId]
+    );
+    
+    res.json({ success: true, message: 'Detecção registrada' });
   } catch (error) {
-    console.error('Error creating company:', error);
-    res.status(500).json({ error: 'Failed to create company' });
+    console.error('Erro ao registrar detecção:', error);
+    res.status(500).json({ error: 'Erro ao registrar detecção' });
+  }
+});
+
+// 5. Buscar detecções da empresa
+app.get('/api/detections', authenticateApiKey, async (req, res) => {
+  const companyId = req.company.id;
+  const { limit = 100, userEmail } = req.query;
+  
+  try {
+    let query = `
+      SELECT 
+        d.id,
+        d.detection_type,
+        d.confidence_level,
+        d.ai_platform,
+        d.url,
+        d.detected_value_masked,
+        d.timestamp,
+        u.user_name,
+        u.user_email
+      FROM detections d
+      JOIN users u ON d.user_id = u.id
+      WHERE d.company_id = $1
+    `;
+    
+    const params = [companyId];
+    
+    // Filtrar por usuário específico se fornecido
+    if (userEmail) {
+      query += ' AND u.user_email = $2';
+      params.push(userEmail);
+    }
+    
+    query += ' ORDER BY d.timestamp DESC LIMIT $' + (params.length + 1);
+    params.push(limit);
+    
+    const result = await pool.query(query, params);
+    
+    res.json({
+      success: true,
+      total: result.rows.length,
+      detections: result.rows
+    });
+  } catch (error) {
+    console.error('Erro ao buscar detecções:', error);
+    res.status(500).json({ error: 'Erro ao buscar detecções' });
+  }
+});
+
+// 6. Estatísticas da empresa
+app.get('/api/stats', authenticateApiKey, async (req, res) => {
+  const companyId = req.company.id;
+  
+  try {
+    const result = await pool.query(
+      'SELECT * FROM company_statistics WHERE company_id = $1',
+      [companyId]
+    );
+    
+    res.json({
+      success: true,
+      stats: result.rows[0] || {
+        total_users: 0,
+        active_users: 0,
+        total_detections: 0,
+        confirmed_detections: 0,
+        suspicious_detections: 0
+      }
+    });
+  } catch (error) {
+    console.error('Erro ao buscar estatísticas:', error);
+    res.status(500).json({ error: 'Erro ao buscar estatísticas' });
+  }
+});
+
+// 7. Relatório mensal
+app.get('/api/report/:month/:year', authenticateApiKey, async (req, res) => {
+  const { month, year } = req.params;
+  const companyId = req.company.id;
+  
+  try {
+    const result = await pool.query(
+      `SELECT 
+        u.user_name,
+        u.user_email,
+        COUNT(CASE WHEN d.confidence_level = 'confirmed' THEN 1 END) as confirmed_count,
+        COUNT(CASE WHEN d.confidence_level = 'suspicious' THEN 1 END) as suspicious_count,
+        COUNT(*) as total_count
+      FROM users u
+      LEFT JOIN detections d ON u.id = d.user_id 
+        AND EXTRACT(MONTH FROM d.timestamp) = $1 
+        AND EXTRACT(YEAR FROM d.timestamp) = $2
+      WHERE u.company_id = $3 AND u.is_active = true
+      GROUP BY u.user_name, u.user_email
+      ORDER BY total_count DESC`,
+      [month, year, companyId]
+    );
+    
+    const totalConfirmed = result.rows.reduce((sum, row) => sum + parseInt(row.confirmed_count), 0);
+    const totalSuspicious = result.rows.reduce((sum, row) => sum + parseInt(row.suspicious_count), 0);
+    
+    res.json({
+      company: req.company.name,
+      month: parseInt(month),
+      year: parseInt(year),
+      summary: {
+        total_confirmed: totalConfirmed,
+        total_suspicious: totalSuspicious,
+        total_detections: totalConfirmed + totalSuspicious,
+        fine_prevented_eur: totalConfirmed * 50000 // €50k por detecção confirmada
+      },
+      users: result.rows
+    });
+  } catch (error) {
+    console.error('Erro ao gerar relatório:', error);
+    res.status(500).json({ error: 'Erro ao gerar relatório' });
+  }
+});
+
+// 8. Listar usuários da empresa
+app.get('/api/users', authenticateApiKey, async (req, res) => {
+  const companyId = req.company.id;
+  
+  try {
+    const result = await pool.query(
+      'SELECT id, user_name, user_email, is_active, created_at, last_activity FROM users WHERE company_id = $1',
+      [companyId]
+    );
+    
+    res.json({
+      success: true,
+      total: result.rows.length,
+      max_users: req.company.max_users,
+      users: result.rows
+    });
+  } catch (error) {
+    console.error('Erro ao listar usuários:', error);
+    res.status(500).json({ error: 'Erro ao listar usuários' });
   }
 });
 
 // ============================================
-// STRIPE ENDPOINTS
+// STRIPE WEBHOOKS E CHECKOUT
 // ============================================
 
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY || 'sk_test_dummy');
 
-// Create checkout session
+// Criar sessão de checkout
 app.post('/api/checkout', async (req, res) => {
-  const { priceId, email, companyName } = req.body;
+  const { priceId, email, companyName, planType } = req.body;
   
   try {
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
-      line_items: [
-        {
-          price: priceId,
-          quantity: 1
-        }
-      ],
+      line_items: [{ price: priceId, quantity: 1 }],
       mode: 'subscription',
-      success_url: 'https://aishield.eu/success?session_id={CHECKOUT_SESSION_ID}',
-      cancel_url: 'https://aishield.eu/cancel',
+      success_url: `${process.env.FRONTEND_URL || 'https://aishield.eu'}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://aishield.eu'}/cancel`,
       customer_email: email,
-      metadata: {
-        companyName: companyName
-      }
-    } );
+      metadata: { companyName, planType }
+    });
     
     res.json({ sessionId: session.id, url: session.url });
   } catch (error) {
-    console.error('Error creating checkout session:', error);
+    console.error('Erro no checkout:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Webhook handler
-app.post('/api/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+// Webhook do Stripe
+app.post('/api/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   
   try {
@@ -188,135 +431,80 @@ app.post('/api/webhook', express.raw({type: 'application/json'}), async (req, re
       process.env.STRIPE_WEBHOOK_SECRET || 'whsec_test_dummy'
     );
     
-    // Handle subscription created
+    // Assinatura criada
     if (event.type === 'customer.subscription.created') {
       const subscription = event.data.object;
       const customer = await stripe.customers.retrieve(subscription.customer);
       
-      // Create company in database
-      const crypto = require('crypto');
-      const companyId = crypto.randomUUID();
-      await pool.query(
-        'INSERT INTO companies (id, name, admin_email, plan, stripe_customer_id, stripe_subscription_id, active) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      const planType = subscription.metadata?.planType || 'team';
+      const maxUsers = planType === 'solo' ? 1 : planType === 'team' ? 10 : 999999;
+      const apiKey = generateApiKey(planType);
+      
+      const result = await pool.query(
+        `INSERT INTO companies 
+         (name, admin_email, plan_type, max_users, stripe_customer_id, stripe_subscription_id, api_key, subscription_status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
         [
-          companyId,
           customer.metadata?.companyName || customer.email,
           customer.email,
-          subscription.items.data[0].price.nickname || 'team',
+          planType,
+          maxUsers,
           subscription.customer,
           subscription.id,
-          true
+          apiKey,
+          subscription.status
         ]
       );
       
-      console.log('Subscription created:', subscription.id);
+      // Enviar email de boas-vindas
+      await sendWelcomeEmail(customer.email, result.rows[0].name, apiKey, result.rows[0].id);
+      
+      console.log('✅ Nova assinatura criada:', subscription.id);
     }
     
-    // Handle subscription updated
-    if (event.type === 'customer.subscription.updated') {
-      const subscription = event.data.object;
-      await pool.query(
-        'UPDATE companies SET stripe_subscription_id = $1 WHERE stripe_customer_id = $2',
-        [subscription.id, subscription.customer]
-      );
-      console.log('Subscription updated:', subscription.id);
-    }
-    
-    // Handle subscription deleted
+    // Assinatura cancelada
     if (event.type === 'customer.subscription.deleted') {
       const subscription = event.data.object;
       await pool.query(
-        'UPDATE companies SET active = false WHERE stripe_subscription_id = $1',
-        [subscription.id]
+        'UPDATE companies SET is_active = false, subscription_status = $1 WHERE stripe_subscription_id = $2',
+        ['canceled', subscription.id]
       );
-      console.log('Subscription deleted:', subscription.id);
+      console.log('⚠️ Assinatura cancelada:', subscription.id);
     }
     
     res.json({received: true});
   } catch (error) {
-    console.error('Webhook error:', error);
+    console.error('Erro no webhook:', error);
     res.status(400).send(`Webhook Error: ${error.message}`);
   }
 });
 
-// Get subscription status
-app.get('/api/subscription/:companyId', async (req, res) => {
-  const { companyId } = req.params;
+// ============================================
+// DASHBOARD KOLLER GROUP (ADMIN)
+// ============================================
+
+// Listar todas as empresas
+app.get('/api/admin/companies', async (req, res) => {
+  const { adminPassword } = req.query;
+  
+  if (adminPassword !== process.env.ADMIN_PASSWORD) {
+    return res.status(403).json({ error: 'Senha de administrador inválida' });
+  }
   
   try {
-    const company = await pool.query(
-      'SELECT * FROM companies WHERE id = $1',
-      [companyId]
-    );
-    
-    if (company.rows.length === 0) {
-      return res.status(404).json({ error: 'Company not found' });
-    }
-    
-    const subscription = await stripe.subscriptions.retrieve(
-      company.rows[0].stripe_subscription_id
-    );
-    
-    res.json({
-      status: subscription.status,
-      currentPeriodEnd: subscription.current_period_end,
-      plan: subscription.items.data[0].price.nickname
-    });
+    const result = await pool.query('SELECT * FROM company_statistics ORDER BY company_name');
+    res.json({ success: true, companies: result.rows });
   } catch (error) {
-    console.error('Error fetching subscription:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Erro ao listar empresas:', error);
+    res.status(500).json({ error: 'Erro ao listar empresas' });
   }
 });
 
 // ============================================
-// SCHEDULED TASKS
+// EMAIL
 // ============================================
 
-// Send monthly reports on 1st of month at 8:00 AM
-schedule.scheduleJob('0 8 1 * *', async () => {
-  console.log('Sending monthly reports...');
-  
-  try {
-    const companies = await pool.query('SELECT * FROM companies WHERE active = true');
-    
-    for (const company of companies.rows) {
-      const now = new Date();
-      const lastMonth = now.getMonth() === 0 ? 12 : now.getMonth();
-      const lastYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
-      
-      // Generate report
-      const reportData = await pool.query(
-        `SELECT user_id, detection_type, COUNT(*) as count 
-         FROM detections 
-         WHERE company_id = $1 
-         AND EXTRACT(MONTH FROM timestamp) = $2 
-         AND EXTRACT(YEAR FROM timestamp) = $3 
-         GROUP BY user_id, detection_type`,
-        [company.id, lastMonth, lastYear]
-      );
-      
-      const totalDetections = reportData.rows.reduce((sum, row) => sum + parseInt(row.count), 0);
-      
-      // Send email
-      await sendReportEmail(
-        company.admin_email,
-        company.name,
-        lastMonth,
-        lastYear,
-        totalDetections,
-        reportData.rows
-      );
-    }
-  } catch (error) {
-    console.error('Error sending reports:', error);
-  }
-});
-
-// ============================================
-// EMAIL FUNCTION
-// ============================================
-
-async function sendReportEmail(email, companyName, month, year, totalDetections, data) {
+async function sendWelcomeEmail(email, companyName, apiKey, companyId) {
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
@@ -325,51 +513,151 @@ async function sendReportEmail(email, companyName, month, year, totalDetections,
     }
   });
   
-  const monthName = new Date(year, month - 1).toLocaleString('en-US', { month: 'long' });
-  
-  let detailsHtml = data.map(row => 
-    `<tr><td>${row.user_id}</td><td>${row.detection_type}</td><td>${row.count}</td></tr>`
-  ).join('');
-  
   const html = `
-    <h1>AI-Shield Monthly Report</h1>
-    <p>Hi ${companyName},</p>
-    <p>Here's your report for ${monthName} ${year}:</p>
+    <h1>Bem-vindo ao IA Shield!</h1>
+    <p>Olá ${companyName},</p>
+    <p>Sua conta foi criada com sucesso. Aqui estão suas credenciais:</p>
     
-    <h2>Summary</h2>
-    <p><strong>Total Detections:</strong> ${totalDetections}</p>
-    <p><strong>Fine Prevented:</strong> €${(totalDetections * 50000).toLocaleString()}</p>
+    <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
+      <p><strong>Company ID:</strong> ${companyId}</p>
+      <p><strong>API Key:</strong> <code style="background: white; padding: 4px 8px; border-radius: 4px;">${apiKey}</code></p>
+    </div>
     
-    <h2>Details by Employee</h2>
-    <table border="1" cellpadding="10">
-      <tr><th>Employee</th><th>Type</th><th>Count</th></tr>
-      ${detailsHtml}
-    </table>
+    <h3>Como usar:</h3>
+    <ol>
+      <li>Instale a extensão IA Shield no Chrome</li>
+      <li>Clique no ícone da extensão</li>
+      <li>Cole seu Company ID e API Key</li>
+      <li>Pronto! Você está protegido.</li>
+    </ol>
     
-    <p>Keep your team safe!</p>
-    <p>AI-Shield Team</p>
+    <p><strong>IMPORTANTE:</strong> Guarde sua API Key em local seguro. Não compartilhe publicamente.</p>
+    
+    <p>Equipe IA Shield - Koller Group</p>
   `;
   
   try {
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
       to: email,
-      subject: `AI-Shield Report - ${monthName} ${year}`,
-      html: html
+      subject: '🛡️ Bem-vindo ao IA Shield - Suas Credenciais',
+      html
     });
-    
-    console.log(`Report sent to ${email}`);
+    console.log(`✅ Email enviado para ${email}`);
   } catch (error) {
-    console.error('Error sending email:', error);
+    console.error('❌ Erro ao enviar email:', error);
+  }
+}
+
+// Enviar relatórios mensais (todo dia 1 às 8h)
+schedule.scheduleJob('0 8 1 * *', async () => {
+  console.log('📧 Enviando relatórios mensais...');
+  
+  try {
+    const companies = await pool.query('SELECT * FROM companies WHERE is_active = true');
+    
+    for (const company of companies.rows) {
+      const now = new Date();
+      const lastMonth = now.getMonth() === 0 ? 12 : now.getMonth();
+      const lastYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+      
+      // Buscar dados do relatório
+      const reportData = await pool.query(
+        `SELECT 
+          u.user_name,
+          u.user_email,
+          COUNT(CASE WHEN d.confidence_level = 'confirmed' THEN 1 END) as confirmed,
+          COUNT(CASE WHEN d.confidence_level = 'suspicious' THEN 1 END) as suspicious
+        FROM users u
+        LEFT JOIN detections d ON u.id = d.user_id 
+          AND EXTRACT(MONTH FROM d.timestamp) = $1 
+          AND EXTRACT(YEAR FROM d.timestamp) = $2
+        WHERE u.company_id = $3 AND u.is_active = true
+        GROUP BY u.user_name, u.user_email`,
+        [lastMonth, lastYear, company.id]
+      );
+      
+      await sendMonthlyReport(company, lastMonth, lastYear, reportData.rows);
+    }
+  } catch (error) {
+    console.error('❌ Erro ao enviar relatórios:', error);
+  }
+});
+
+async function sendMonthlyReport(company, month, year, userData) {
+  const transporter = nodemailer.createTransporter({
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASSWORD
+    }
+  });
+  
+  const monthName = new Date(year, month - 1).toLocaleString('pt-PT', { month: 'long' });
+  const totalConfirmed = userData.reduce((sum, u) => sum + parseInt(u.confirmed), 0);
+  const totalSuspicious = userData.reduce((sum, u) => sum + parseInt(u.suspicious), 0);
+  
+  let userRows = userData.map(u => `
+    <tr>
+      <td style="padding: 8px; border: 1px solid #ddd;">${u.user_name}</td>
+      <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">${u.confirmed}</td>
+      <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">${u.suspicious}</td>
+    </tr>
+  `).join('');
+  
+  const html = `
+    <h1>🛡️ IA Shield - Relatório Mensal</h1>
+    <p>Olá ${company.name},</p>
+    <p>Aqui está o relatório de <strong>${monthName} ${year}</strong>:</p>
+    
+    <h2>📊 Resumo</h2>
+    <ul>
+      <li>🔴 <strong>Detecções Confirmadas:</strong> ${totalConfirmed}</li>
+      <li>🟡 <strong>Suspeitas:</strong> ${totalSuspicious}</li>
+      <li>💰 <strong>Multas Prevenidas:</strong> €${(totalConfirmed * 50000).toLocaleString()}</li>
+    </ul>
+    
+    <h2>👥 Por Funcionário</h2>
+    <table style="border-collapse: collapse; width: 100%;">
+      <tr style="background: #f5f5f5;">
+        <th style="padding: 8px; border: 1px solid #ddd;">Funcionário</th>
+        <th style="padding: 8px; border: 1px solid #ddd;">Confirmadas</th>
+        <th style="padding: 8px; border: 1px solid #ddd;">Suspeitas</th>
+      </tr>
+      ${userRows}
+    </table>
+    
+    <p style="margin-top: 20px;">Continue protegido!</p>
+    <p>Equipe IA Shield - Koller Group</p>
+  `;
+  
+  try {
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: company.admin_email,
+      subject: `📊 IA Shield - Relatório ${monthName} ${year}`,
+      html
+    });
+    console.log(`✅ Relatório enviado para ${company.admin_email}`);
+  } catch (error) {
+    console.error('❌ Erro ao enviar relatório:', error);
   }
 }
 
 // ============================================
-// START SERVER
+// INICIAR SERVIDOR
 // ============================================
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`AI-Shield Backend running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`
+  ╔════════════════════════════════════════╗
+  ║   🛡️  IA SHIELD BACKEND v2.0.0        ║
+  ║   By Koller Group                     ║
+  ╚════════════════════════════════════════╝
+  
+  ✅ Servidor rodando na porta ${PORT}
+  ✅ Ambiente: ${process.env.NODE_ENV || 'development'}
+  
+  `);
 });
