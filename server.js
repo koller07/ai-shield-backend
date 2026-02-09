@@ -135,6 +135,119 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// 1.5. Inicializar banco de dados (TEMPORÁRIO - só para setup inicial)
+app.get('/api/admin/init-database', async (req, res) => {
+  const { adminPassword } = req.query;
+  
+  if (adminPassword !== process.env.ADMIN_PASSWORD) {
+    return res.status(403).json({ error: 'Senha de administrador inválida' });
+  }
+  
+  try {
+    console.log('🗄️ Inicializando banco de dados...');
+    
+    // Dropar tabelas antigas
+    await pool.query('DROP TABLE IF EXISTS detections CASCADE');
+    await pool.query('DROP TABLE IF EXISTS monthly_reports CASCADE');
+    await pool.query('DROP TABLE IF EXISTS users CASCADE');
+    await pool.query('DROP TABLE IF EXISTS companies CASCADE');
+    console.log('✅ Tabelas antigas removidas');
+    
+    // Criar tabela companies
+    await pool.query(`
+      CREATE TABLE companies (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name VARCHAR(255) NOT NULL,
+        admin_email VARCHAR(255) NOT NULL UNIQUE,
+        plan_type VARCHAR(50) NOT NULL CHECK (plan_type IN ('solo', 'team', 'enterprise')),
+        max_users INTEGER NOT NULL DEFAULT 1,
+        stripe_customer_id VARCHAR(255) UNIQUE,
+        stripe_subscription_id VARCHAR(255) UNIQUE,
+        api_key VARCHAR(255) NOT NULL UNIQUE,
+        is_active BOOLEAN DEFAULT true,
+        subscription_status VARCHAR(50) DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        subscription_end_date TIMESTAMP
+      )
+    `);
+    console.log('✅ Tabela companies criada');
+    
+    // Criar tabela users
+    await pool.query(`
+      CREATE TABLE users (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        user_name VARCHAR(255) NOT NULL,
+        user_email VARCHAR(255) NOT NULL,
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW(),
+        last_activity TIMESTAMP,
+        UNIQUE(company_id, user_email)
+      )
+    `);
+    console.log('✅ Tabela users criada');
+    
+    // Criar tabela detections
+    await pool.query(`
+      CREATE TABLE detections (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        detection_type VARCHAR(100) NOT NULL,
+        confidence_level VARCHAR(20) NOT NULL CHECK (confidence_level IN ('confirmed', 'suspicious')),
+        ai_platform VARCHAR(100),
+        url TEXT,
+        detected_value_masked VARCHAR(255),
+        timestamp TIMESTAMP NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log('✅ Tabela detections criada');
+    
+    // Criar tabela monthly_reports
+    await pool.query(`
+      CREATE TABLE monthly_reports (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
+        year INTEGER NOT NULL CHECK (year >= 2024),
+        total_detections_confirmed INTEGER DEFAULT 0,
+        total_detections_suspicious INTEGER DEFAULT 0,
+        total_users_active INTEGER DEFAULT 0,
+        report_data JSONB,
+        generated_at TIMESTAMP DEFAULT NOW(),
+        sent_at TIMESTAMP,
+        UNIQUE(company_id, month, year)
+      )
+    `);
+    console.log('✅ Tabela monthly_reports criada');
+    
+    // Criar índices
+    await pool.query('CREATE INDEX idx_detections_company ON detections(company_id)');
+    await pool.query('CREATE INDEX idx_detections_user ON detections(user_id)');
+    await pool.query('CREATE INDEX idx_detections_timestamp ON detections(timestamp)');
+    await pool.query('CREATE INDEX idx_detections_confidence ON detections(confidence_level)');
+    await pool.query('CREATE INDEX idx_users_company ON users(company_id)');
+    await pool.query('CREATE INDEX idx_companies_api_key ON companies(api_key)');
+    console.log('✅ Índices criados');
+    
+    res.json({
+      success: true,
+      message: 'Banco de dados inicializado com sucesso!',
+      tables_created: ['companies', 'users', 'detections', 'monthly_reports'],
+      indexes_created: 6
+    });
+    
+  } catch (error) {
+    console.error('❌ Erro ao inicializar banco:', error);
+    res.status(500).json({ 
+      error: 'Erro ao inicializar banco de dados',
+      details: error.message 
+    });
+  }
+});
+
 // 2. Criar empresa manualmente (para Plano Enterprise - Dashboard Koller)
 app.post('/api/admin/companies', async (req, res) => {
   const { name, adminEmail, planType, maxUsers, adminPassword } = req.body;
