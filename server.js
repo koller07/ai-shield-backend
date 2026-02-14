@@ -1,5 +1,5 @@
 // ============================================
-// IA SHIELD BACKEND - CORRIGIDO
+// IA SHIELD BACKEND - CORRIGIDO + ADMIN DASHBOARD
 // By Koller Group
 // ============================================
 
@@ -593,23 +593,209 @@ app.post('/api/webhook', async (req, res) => {
 });
 
 // ============================================
-// DASHBOARD KOLLER GROUP (ADMIN)
+// DASHBOARD KOLLER GROUP (ADMIN) - ROTAS COMPLETAS
 // ============================================
 
-// Listar todas as empresas
+// Listar todas as empresas (com contadores)
 app.get('/api/admin/companies', async (req, res) => {
-  const { adminPassword } = req.query;
+  const adminPassword = req.headers['admin-password'];
   
   if (adminPassword !== process.env.ADMIN_PASSWORD) {
     return res.status(403).json({ error: 'Senha de administrador inválida' });
   }
   
   try {
-    const result = await pool.query('SELECT * FROM company_statistics ORDER BY company_name');
+    const result = await pool.query(`
+      SELECT 
+        c.*,
+        COUNT(DISTINCT u.id) as user_count,
+        COUNT(d.id) as detection_count
+      FROM companies c
+      LEFT JOIN users u ON c.id = u.company_id AND u.is_active = true
+      LEFT JOIN detections d ON c.id = d.company_id
+      GROUP BY c.id
+      ORDER BY c.created_at DESC
+    `);
+    
     res.json({ success: true, companies: result.rows });
   } catch (error) {
     console.error('Erro ao listar empresas:', error);
     res.status(500).json({ error: 'Erro ao listar empresas' });
+  }
+});
+
+// Listar todos os usuários (admin)
+app.get('/api/admin/users', async (req, res) => {
+  const adminPassword = req.headers['admin-password'];
+  
+  if (adminPassword !== process.env.ADMIN_PASSWORD) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+  
+  try {
+    const result = await pool.query(`
+      SELECT 
+        u.id,
+        u.user_name,
+        u.user_email,
+        u.is_active,
+        u.created_at,
+        u.last_activity,
+        c.name as company_name,
+        c.plan_type,
+        COUNT(d.id) as detection_count
+      FROM users u
+      JOIN companies c ON u.company_id = c.id
+      LEFT JOIN detections d ON u.id = d.user_id
+      GROUP BY u.id, c.name, c.plan_type
+      ORDER BY u.created_at DESC
+    `);
+    
+    res.json({ success: true, users: result.rows });
+  } catch (error) {
+    console.error('Erro ao listar usuários:', error);
+    res.status(500).json({ error: 'Erro ao listar usuários' });
+  }
+});
+
+// Listar todas as detecções (admin com filtros)
+app.get('/api/admin/detections', async (req, res) => {
+  const adminPassword = req.headers['admin-password'];
+  
+  if (adminPassword !== process.env.ADMIN_PASSWORD) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+  
+  try {
+    const { limit = 100, offset = 0, dateFrom, dateTo, confidence, type, companyId } = req.query;
+    
+    let whereConditions = [];
+    let params = [];
+    let paramCount = 1;
+    
+    if (dateFrom) {
+      whereConditions.push(`d.timestamp >= $${paramCount}`);
+      params.push(dateFrom);
+      paramCount++;
+    }
+    
+    if (dateTo) {
+      whereConditions.push(`d.timestamp <= $${paramCount}`);
+      params.push(dateTo);
+      paramCount++;
+    }
+    
+    if (confidence) {
+      whereConditions.push(`d.confidence_level = $${paramCount}`);
+      params.push(confidence);
+      paramCount++;
+    }
+    
+    if (type) {
+      whereConditions.push(`d.detection_type = $${paramCount}`);
+      params.push(type);
+      paramCount++;
+    }
+    
+    if (companyId) {
+      whereConditions.push(`d.company_id = $${paramCount}`);
+      params.push(companyId);
+      paramCount++;
+    }
+    
+    const whereClause = whereConditions.length > 0 
+      ? 'WHERE ' + whereConditions.join(' AND ')
+      : '';
+    
+    params.push(limit, offset);
+    
+    const result = await pool.query(`
+      SELECT 
+        d.id,
+        d.detection_type,
+        d.confidence_level,
+        d.ai_platform,
+        d.url,
+        d.detected_value_masked,
+        d.timestamp,
+        d.created_at,
+        u.user_name,
+        u.user_email,
+        c.name as company_name
+      FROM detections d
+      JOIN users u ON d.user_id = u.id
+      JOIN companies c ON d.company_id = c.id
+      ${whereClause}
+      ORDER BY d.timestamp DESC
+      LIMIT $${paramCount} OFFSET $${paramCount + 1}
+    `, params);
+    
+    res.json({ success: true, detections: result.rows });
+  } catch (error) {
+    console.error('Erro ao listar detecções:', error);
+    res.status(500).json({ error: 'Erro ao listar detecções' });
+  }
+});
+
+// Estatísticas globais (admin)
+app.get('/api/admin/stats', async (req, res) => {
+  const adminPassword = req.headers['admin-password'];
+  
+  if (adminPassword !== process.env.ADMIN_PASSWORD) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+  
+  try {
+    // Total de empresas
+    const companiesResult = await pool.query(
+      'SELECT COUNT(*) as total FROM companies WHERE is_active = true'
+    );
+    const totalCompanies = parseInt(companiesResult.rows[0].total);
+    
+    // Total de usuários
+    const usersResult = await pool.query(
+      'SELECT COUNT(*) as total FROM users WHERE is_active = true'
+    );
+    const totalUsers = parseInt(usersResult.rows[0].total);
+    
+    // Total de detecções
+    const detectionsResult = await pool.query(
+      'SELECT COUNT(*) as total FROM detections'
+    );
+    const totalDetections = parseInt(detectionsResult.rows[0].total);
+    
+    // Detecções do mês
+    const monthResult = await pool.query(`
+      SELECT COUNT(*) as total 
+      FROM detections 
+      WHERE timestamp >= DATE_TRUNC('month', CURRENT_DATE)
+    `);
+    const monthDetections = parseInt(monthResult.rows[0].total);
+    
+    // Confirmadas vs Suspeitas
+    const confidenceResult = await pool.query(`
+      SELECT 
+        confidence_level,
+        COUNT(*) as count
+      FROM detections
+      GROUP BY confidence_level
+    `);
+    
+    const confirmed = confidenceResult.rows.find(r => r.confidence_level === 'confirmed')?.count || 0;
+    const suspicious = confidenceResult.rows.find(r => r.confidence_level === 'suspicious')?.count || 0;
+    
+    res.json({
+      success: true,
+      totalCompanies,
+      totalUsers,
+      totalDetections,
+      monthDetections,
+      confirmedDetections: parseInt(confirmed),
+      suspiciousDetections: parseInt(suspicious)
+    });
+  } catch (error) {
+    console.error('Erro ao buscar estatísticas:', error);
+    res.status(500).json({ error: 'Erro ao buscar estatísticas' });
   }
 });
 
@@ -767,10 +953,12 @@ app.listen(PORT, () => {
   ╔════════════════════════════════════════╗
   ║   🛡️  IA SHIELD BACKEND v2.0.0        ║
   ║   By Koller Group                     ║
+  ║   + Admin Dashboard Routes            ║
   ╚════════════════════════════════════════╝
   
   ✅ Servidor rodando na porta ${PORT}
   ✅ Ambiente: ${process.env.NODE_ENV || 'development'}
+  ✅ Rotas Admin: /api/admin/*
   
   `);
 });
