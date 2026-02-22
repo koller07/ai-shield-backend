@@ -10,6 +10,7 @@ const dotenv = require('dotenv');
 const nodemailer = require('nodemailer');
 const schedule = require('node-schedule');
 const crypto = require('crypto');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 dotenv.config();
 
@@ -942,6 +943,422 @@ async function sendMonthlyReport(company, month, year, userData) {
     console.error('❌ Erro ao enviar relatório:', error);
   }
 }
+
+// ============================================
+// ADICIONE ESTE CÓDIGO NO SEU server.js
+// ============================================
+
+// 1. NO TOPO DO ARQUIVO (depois das outras importações):
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+// ============================================
+// 2. ADICIONE ESTAS NOVAS ROTAS (depois das rotas existentes)
+// ============================================
+
+// ============================================
+// STRIPE CHECKOUT - Criar sessão de pagamento
+// ============================================
+app.post('/api/checkout', async (req, res) => {
+  const { priceId, planType, email, companyName } = req.body;
+  
+  // Validação
+  if (!priceId || !email || !companyName) {
+    return res.status(400).json({ 
+      error: 'Campos obrigatórios: priceId, email, companyName' 
+    });
+  }
+  
+  try {
+    console.log(`📝 Criando checkout session para ${email}...`);
+    
+    // Criar sessão de checkout no Stripe
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price: priceId,
+          quantity: 1
+        }
+      ],
+      mode: 'subscription',
+      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL}/#pricing`,
+      customer_email: email,
+      metadata: {
+        companyName: companyName,
+        planType: planType || 'team',
+        source: 'ai-shield-website'
+      },
+      subscription_data: {
+        metadata: {
+          companyName: companyName,
+          planType: planType || 'team'
+        }
+      }
+    });
+    
+    console.log(`✅ Checkout session criada: ${session.id}`);
+    
+    res.json({ 
+      sessionId: session.id,
+      url: session.url 
+    });
+    
+  } catch (error) {
+    console.error('❌ Erro ao criar checkout session:', error);
+    res.status(500).json({ 
+      error: 'Erro ao criar sessão de checkout',
+      details: error.message 
+    });
+  }
+});
+
+// ============================================
+// STRIPE WEBHOOK - Receber eventos do Stripe
+// ============================================
+app.post('/api/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  
+  let event;
+  
+  try {
+    // Verificar assinatura do webhook
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error('❌ Webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+  
+  console.log(`📨 Webhook recebido: ${event.type}`);
+  
+  // Processar diferentes tipos de eventos
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed':
+        await handleCheckoutCompleted(event.data.object);
+        break;
+        
+      case 'customer.subscription.created':
+        await handleSubscriptionCreated(event.data.object);
+        break;
+        
+      case 'customer.subscription.updated':
+        await handleSubscriptionUpdated(event.data.object);
+        break;
+        
+      case 'customer.subscription.deleted':
+        await handleSubscriptionDeleted(event.data.object);
+        break;
+        
+      default:
+        console.log(`⚠️ Evento não tratado: ${event.type}`);
+    }
+    
+    res.json({ received: true });
+    
+  } catch (error) {
+    console.error('❌ Erro ao processar webhook:', error);
+    res.status(500).json({ error: 'Erro ao processar evento' });
+  }
+});
+
+// ============================================
+// FUNÇÕES DE PROCESSAMENTO DE EVENTOS STRIPE
+// ============================================
+
+// Checkout completado (pagamento aprovado)
+async function handleCheckoutCompleted(session) {
+  console.log(`✅ Checkout completado: ${session.id}`);
+  
+  const { customer_email, metadata, subscription } = session;
+  const { companyName, planType } = metadata;
+  
+  // Buscar subscription para pegar informações completas
+  const stripeSubscription = await stripe.subscriptions.retrieve(subscription);
+  
+  // Gerar API Key única
+  const apiKey = generateApiKey(planType);
+  
+  // Determinar número máximo de usuários
+  const maxUsers = planType === 'solo' ? 1 : 
+                   planType === 'team' ? 10 : 
+                   999999; // enterprise
+  
+  try {
+    // Criar empresa no banco de dados
+    const companyResult = await pool.query(
+      `INSERT INTO companies 
+       (name, admin_email, plan_type, max_users, api_key, 
+        stripe_customer_id, stripe_subscription_id, is_active, subscription_status) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+       RETURNING *`,
+      [
+        companyName,
+        customer_email,
+        planType,
+        maxUsers,
+        apiKey,
+        stripeSubscription.customer,
+        stripeSubscription.id,
+        true,
+        'active'
+      ]
+    );
+    
+    const company = companyResult.rows[0];
+    console.log(`✅ Empresa criada: ${company.id}`);
+    
+    // Enviar email de boas-vindas com API Key
+    await sendWelcomeEmail(customer_email, companyName, apiKey, planType);
+    
+    console.log(`✅ Email de boas-vindas enviado para ${customer_email}`);
+    
+  } catch (error) {
+    console.error('❌ Erro ao criar empresa:', error);
+    throw error;
+  }
+}
+
+// Subscription criada
+async function handleSubscriptionCreated(subscription) {
+  console.log(`📝 Subscription criada: ${subscription.id}`);
+  // Já tratado em checkout.session.completed
+}
+
+// Subscription atualizada (upgrade, downgrade, renovação)
+async function handleSubscriptionUpdated(subscription) {
+  console.log(`🔄 Subscription atualizada: ${subscription.id}`);
+  
+  try {
+    // Atualizar status da empresa
+    await pool.query(
+      `UPDATE companies 
+       SET subscription_status = $1, updated_at = NOW()
+       WHERE stripe_subscription_id = $2`,
+      [subscription.status, subscription.id]
+    );
+    
+    console.log(`✅ Status atualizado para: ${subscription.status}`);
+    
+  } catch (error) {
+    console.error('❌ Erro ao atualizar subscription:', error);
+  }
+}
+
+// Subscription cancelada
+async function handleSubscriptionDeleted(subscription) {
+  console.log(`❌ Subscription cancelada: ${subscription.id}`);
+  
+  try {
+    // Desativar empresa
+    await pool.query(
+      `UPDATE companies 
+       SET is_active = false, subscription_status = 'canceled', updated_at = NOW()
+       WHERE stripe_subscription_id = $1`,
+      [subscription.id]
+    );
+    
+    console.log(`✅ Empresa desativada`);
+    
+  } catch (error) {
+    console.error('❌ Erro ao cancelar subscription:', error);
+  }
+}
+
+// ============================================
+// FUNÇÃO DE EMAIL DE BOAS-VINDAS
+// ============================================
+async function sendWelcomeEmail(email, companyName, apiKey, planType) {
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASSWORD
+    }
+  });
+  
+  const planNames = {
+    solo: 'Solo (1 usuário)',
+    team: 'Team (até 10 usuários)',
+    enterprise: 'Enterprise (ilimitado)'
+  };
+  
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .header {
+      background: linear-gradient(135deg, #001a3d 0%, #003d7a 100%);
+      color: white;
+      padding: 30px;
+      text-align: center;
+      border-radius: 8px 8px 0 0;
+    }
+    .content {
+      background: #f8f9fa;
+      padding: 30px;
+      border-radius: 0 0 8px 8px;
+    }
+    .api-key-box {
+      background: white;
+      border: 2px solid #00a8e8;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 20px 0;
+      font-family: 'Monaco', 'Courier New', monospace;
+      word-break: break-all;
+    }
+    .steps {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 20px 0;
+    }
+    .step {
+      margin: 15px 0;
+      padding-left: 30px;
+      position: relative;
+    }
+    .step::before {
+      content: "✓";
+      position: absolute;
+      left: 0;
+      color: #22c55e;
+      font-weight: bold;
+      font-size: 20px;
+    }
+    .button {
+      display: inline-block;
+      background: #00a8e8;
+      color: white;
+      padding: 12px 30px;
+      text-decoration: none;
+      border-radius: 6px;
+      font-weight: 600;
+      margin: 10px 0;
+    }
+    .footer {
+      text-align: center;
+      color: #666;
+      font-size: 12px;
+      margin-top: 30px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🛡️ Bem-vindo ao AI Shield!</h1>
+    <p>Sua conta está ativa e pronta para proteger seus dados</p>
+  </div>
+  
+  <div class="content">
+    <p>Olá <strong>${companyName}</strong>,</p>
+    
+    <p>Obrigado por escolher o AI Shield! Sua assinatura do plano <strong>${planNames[planType]}</strong> está ativa.</p>
+    
+    <h3>🔑 Sua API Key:</h3>
+    <div class="api-key-box">
+      ${apiKey}
+    </div>
+    <p><strong>⚠️ Importante:</strong> Guarde esta API Key em segurança. Você precisará dela para configurar a extensão.</p>
+    
+    <h3>📋 Próximos passos:</h3>
+    <div class="steps">
+      <div class="step">
+        <strong>1. Instale a extensão:</strong><br>
+        Vá para a Chrome Web Store e instale a extensão AI Shield
+      </div>
+      <div class="step">
+        <strong>2. Configure a extensão:</strong><br>
+        Clique no ícone da extensão e cole sua API Key
+      </div>
+      <div class="step">
+        <strong>3. Proteja seus dados:</strong><br>
+        A extensão começará a monitorar automaticamente
+      </div>
+    </div>
+    
+    <center>
+      <a href="https://chrome.google.com/webstore" class="button">Instalar Extensão Agora</a>
+    </center>
+    
+    <h3>📊 Acesse seu Dashboard:</h3>
+    <p>Visualize detecções, gerencie sua equipe e exporte relatórios de compliance:</p>
+    <center>
+      <a href="https://ai-shield-backend-production.up.railway.app/company-dashboard.html" class="button">Acessar Dashboard</a>
+    </center>
+    
+    <h3>💬 Precisa de ajuda?</h3>
+    <p>Nossa equipe está aqui para ajudar:</p>
+    <ul>
+      <li>📧 Email: ${process.env.EMAIL_USER}</li>
+      <li>📚 Documentação: em breve</li>
+    </ul>
+  </div>
+  
+  <div class="footer">
+    <p>© 2026 AI Shield by Koller Group</p>
+    <p>GDPR & EU AI Act Compliant | Enterprise Data Protection</p>
+  </div>
+</body>
+</html>
+  `;
+  
+  try {
+    await transporter.sendMail({
+      from: `"AI Shield" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: '🛡️ Bem-vindo ao AI Shield - Sua API Key',
+      html: html
+    });
+    
+    console.log(`✅ Email enviado para ${email}`);
+    
+  } catch (error) {
+    console.error('❌ Erro ao enviar email:', error);
+    throw error;
+  }
+}
+
+// ============================================
+// ROTA DE TESTE DO STRIPE (OPCIONAL)
+// ============================================
+app.get('/api/stripe/test', async (req, res) => {
+  try {
+    // Testar conexão com Stripe
+    const products = await stripe.products.list({ limit: 3 });
+    
+    res.json({
+      success: true,
+      message: 'Stripe conectado!',
+      products: products.data.map(p => ({ id: p.id, name: p.name })),
+      testMode: process.env.STRIPE_SECRET_KEY.includes('test')
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ============================================
+// FIM DO CÓDIGO STRIPE
+// Cole este código no seu server.js existente!
+// ============================================
 
 // ============================================
 // INICIAR SERVIDOR
