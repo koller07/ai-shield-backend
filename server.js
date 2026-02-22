@@ -44,8 +44,8 @@ pool.query('SELECT NOW()', (err, res) => {
 // Inicializar tabelas
 async function initializeDatabase() {
   try {
-    const fs = require('fs');
-    const sql = fs.readFileSync('./init.sql', 'utf8');
+     fs = require('fs');
+     sql = fs.readFileSync('./init.sql', 'utf8');
     await pool.query(sql);
     console.log('✅ Tabelas do banco de dados inicializadas');
   } catch (error) {
@@ -61,7 +61,7 @@ initializeDatabase();
 
 // Gerar API Key única
 function generateApiKey(planType) {
-  const prefix = planType === 'enterprise' ? 'sk_ent' : 
+   prefix = planType === 'enterprise' ? 'sk_ent' : 
                  planType === 'team' ? 'sk_team' : 'sk_solo';
   const randomString = crypto.randomBytes(32).toString('hex');
   return `${prefix}_${randomString}`;
