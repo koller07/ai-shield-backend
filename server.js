@@ -945,17 +945,6 @@ async function sendMonthlyReport(company, month, year, userData) {
 }
 
 // ============================================
-// ADICIONE ESTE CÓDIGO NO SEU server.js
-// ============================================
-
-// 1. NO TOPO DO ARQUIVO (depois das outras importações):
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-
-// ============================================
-// 2. ADICIONE ESTAS NOVAS ROTAS (depois das rotas existentes)
-// ============================================
-
-// ============================================
 // STRIPE CHECKOUT - Criar sessão de pagamento
 // ============================================
 app.post('/api/checkout', async (req, res) => {
