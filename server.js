@@ -1,6 +1,7 @@
 // ============================================
-// AI SHIELD BACKEND - VERSÃO CORRIGIDA
+// AI SHIELD BACKEND - VERSÃO CORRIGIDA v3.1.0
 // By Koller Group
+// COM LOGS EXTRAS PARA DEBUG DE EMAIL
 // ============================================
 
 const express = require('express');
@@ -123,9 +124,42 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     message: 'AI Shield Backend rodando',
-    version: '3.0.0',
-    timestamp: new Date().toISOString()
+    version: '3.1.0',
+    timestamp: new Date().toISOString(),
+    email_configured: !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD)
   });
+});
+
+// Teste de Email
+app.get('/api/test-email', async (req, res) => {
+  const { to, adminPassword } = req.query;
+  
+  if (adminPassword !== process.env.ADMIN_PASSWORD) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+  
+  if (!to) {
+    return res.status(400).json({ error: 'Email de destino não fornecido' });
+  }
+  
+  try {
+    console.log('🧪 Testando envio de email...');
+    console.log('📧 Para:', to);
+    console.log('📧 De:', process.env.EMAIL_USER);
+    
+    await sendWelcomeEmail(to, 'Test Company', 'sk_test_123456', 'solo');
+    
+    res.json({ 
+      success: true, 
+      message: 'Email de teste enviado! Verifique a caixa de entrada.'
+    });
+  } catch (error) {
+    console.error('❌ Erro ao enviar email de teste:', error);
+    res.status(500).json({ 
+      error: 'Erro ao enviar email',
+      details: error.message 
+    });
+  }
 });
 
 // Inicializar banco de dados
@@ -564,11 +598,16 @@ app.post('/api/webhook', async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
   
-  console.log(`📨 Webhook recebido: ${event.type}`);
+  console.log('');
+  console.log('═══════════════════════════════════════════');
+  console.log(`📨 WEBHOOK RECEBIDO: ${event.type}`);
+  console.log(`🆔 Event ID: ${event.id}`);
+  console.log('═══════════════════════════════════════════');
   
   try {
     switch (event.type) {
       case 'checkout.session.completed':
+        console.log('💳 Processando checkout completado...');
         await handleCheckoutCompleted(event.data.object);
         break;
         
@@ -577,10 +616,12 @@ app.post('/api/webhook', async (req, res) => {
         break;
         
       case 'customer.subscription.updated':
+        console.log('🔄 Processando atualização de subscription...');
         await handleSubscriptionUpdated(event.data.object);
         break;
         
       case 'customer.subscription.deleted':
+        console.log('❌ Processando cancelamento de subscription...');
         await handleSubscriptionDeleted(event.data.object);
         break;
         
@@ -588,26 +629,50 @@ app.post('/api/webhook', async (req, res) => {
         console.log(`⚠️ Evento não tratado: ${event.type}`);
     }
     
+    console.log('═══════════════════════════════════════════');
+    console.log('✅ Webhook processado com sucesso!');
+    console.log('═══════════════════════════════════════════');
+    console.log('');
+    
     res.json({ received: true });
     
   } catch (error) {
-    console.error('❌ Erro ao processar webhook:', error);
+    console.error('═══════════════════════════════════════════');
+    console.error('❌ ERRO AO PROCESSAR WEBHOOK:', error);
+    console.error('Stack:', error.stack);
+    console.error('═══════════════════════════════════════════');
+    console.log('');
     res.status(500).json({ error: 'Erro ao processar evento' });
   }
 });
 
 // Handlers de eventos Stripe
 async function handleCheckoutCompleted(session) {
-  console.log(`✅ Checkout completado: ${session.id}`);
+  console.log('');
+  console.log('┌─────────────────────────────────────────┐');
+  console.log('│ 💳 PROCESSANDO CHECKOUT COMPLETADO      │');
+  console.log('└─────────────────────────────────────────┘');
+  
+  console.log('📋 Session ID:', session.id);
+  console.log('📧 Email:', session.customer_email);
+  console.log('📦 Metadata:', JSON.stringify(session.metadata, null, 2));
   
   const { customer_email, metadata, subscription } = session;
   const { companyName, planType } = metadata;
   
+  console.log('🔍 Recuperando subscription do Stripe...');
   const stripeSubscription = await stripe.subscriptions.retrieve(subscription);
+  console.log('✅ Subscription recuperada:', stripeSubscription.id);
+  
   const apiKey = generateApiKey(planType);
   const maxUsers = planType === 'solo' ? 1 : planType === 'team' ? 10 : 999999;
   
+  console.log('🔑 API Key gerada:', apiKey);
+  console.log('👥 Max users:', maxUsers);
+  
   try {
+    console.log('💾 Inserindo empresa no banco de dados...');
+    
     const companyResult = await pool.query(
       `INSERT INTO companies 
        (name, admin_email, plan_type, max_users, api_key, 
@@ -627,14 +692,37 @@ async function handleCheckoutCompleted(session) {
       ]
     );
     
-    console.log(`✅ Empresa criada: ${companyResult.rows[0].id}`);
+    console.log('✅ ✅ ✅ EMPRESA CRIADA NO BANCO!');
+    console.log('🆔 Company ID:', companyResult.rows[0].id);
+    console.log('📧 Admin Email:', companyResult.rows[0].admin_email);
+    console.log('');
     
-    await sendWelcomeEmail(customer_email, companyName, apiKey, planType);
+    console.log('═══════════════════════════════════════════');
+    console.log('📧 INICIANDO ENVIO DE EMAIL...');
+    console.log('═══════════════════════════════════════════');
+    console.log('Para:', customer_email);
+    console.log('Empresa:', companyName);
+    console.log('API Key:', apiKey);
+    console.log('Plano:', planType);
+    console.log('EMAIL_USER:', process.env.EMAIL_USER ? 'Configurado' : '❌ NÃO CONFIGURADO');
+    console.log('EMAIL_PASSWORD:', process.env.EMAIL_PASSWORD ? 'Configurado' : '❌ NÃO CONFIGURADO');
+    console.log('');
     
-    console.log(`✅ Email de boas-vindas enviado para ${customer_email}`);
+    try {
+      await sendWelcomeEmail(customer_email, companyName, apiKey, planType);
+      console.log('✅ ✅ ✅ EMAIL ENVIADO COM SUCESSO!');
+    } catch (emailError) {
+      console.error('❌ ❌ ❌ ERRO AO ENVIAR EMAIL:', emailError);
+      console.error('Stack do erro de email:', emailError.stack);
+      // NÃO falha o webhook por causa disso
+    }
+    
+    console.log('═══════════════════════════════════════════');
+    console.log('');
     
   } catch (error) {
-    console.error('❌ Erro ao criar empresa:', error);
+    console.error('❌ ❌ ❌ ERRO AO CRIAR EMPRESA:', error);
+    console.error('Stack:', error.stack);
     throw error;
   }
 }
@@ -853,6 +941,20 @@ app.get('/api/admin/stats', async (req, res) => {
 // ============================================
 
 async function sendWelcomeEmail(email, companyName, apiKey, planType) {
+  console.log('📧 sendWelcomeEmail() chamada');
+  console.log('   Para:', email);
+  console.log('   Empresa:', companyName);
+  console.log('   API Key:', apiKey);
+  console.log('   Plano:', planType);
+  
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+    console.error('❌ EMAIL_USER ou EMAIL_PASSWORD não configurados!');
+    throw new Error('Credenciais de email não configuradas');
+  }
+  
+  console.log('✅ Credenciais de email OK');
+  console.log('📧 Criando transporter...');
+  
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
@@ -860,6 +962,8 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
       pass: process.env.EMAIL_PASSWORD
     }
   });
+  
+  console.log('✅ Transporter criado');
   
   const planNames = {
     solo: 'Solo (1 usuário)',
@@ -975,17 +1079,11 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
       <a href="https://chrome.google.com/webstore" class="button">Instalar Extensão Agora</a>
     </center>
     
-    <h3>📊 Acesse seu Dashboard:</h3>
-    <p>Visualize detecções, gerencie sua equipe e exporte relatórios de compliance:</p>
-    <center>
-      <a href="https://ai-shield-backend-production.up.railway.app/company-dashboard.html" class="button">Acessar Dashboard</a>
-    </center>
-    
     <h3>💬 Precisa de ajuda?</h3>
     <p>Nossa equipe está aqui para ajudar:</p>
     <ul>
       <li>📧 Email: ${process.env.EMAIL_USER}</li>
-      <li>📚 Documentação: em breve</li>
+      <li>🌐 Site: https://getaishield.eu</li>
     </ul>
   </div>
   
@@ -997,18 +1095,28 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
 </html>
   `;
   
+  console.log('📧 Preparando para enviar email...');
+  
   try {
-    await transporter.sendMail({
+    const info = await transporter.sendMail({
       from: `"AI Shield" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: '🛡️ Bem-vindo ao AI Shield - Sua API Key',
       html: html
     });
     
-    console.log(`✅ Email enviado para ${email}`);
+    console.log('✅ ✅ ✅ EMAIL ENVIADO!');
+    console.log('📧 Message ID:', info.messageId);
+    console.log('📧 Response:', info.response);
     
   } catch (error) {
-    console.error('❌ Erro ao enviar email:', error);
+    console.error('❌ ❌ ❌ ERRO AO ENVIAR EMAIL:');
+    console.error('   Tipo:', error.name);
+    console.error('   Mensagem:', error.message);
+    console.error('   Code:', error.code);
+    console.error('   Response:', error.response);
+    console.error('   Stack:', error.stack);
+    throw error;
   }
 }
 
@@ -1039,14 +1147,19 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`
   ╔════════════════════════════════════════╗
-  ║   🛡️  AI SHIELD BACKEND v3.0.0        ║
+  ║   🛡️  AI SHIELD BACKEND v3.1.0        ║
   ║   By Koller Group                     ║
-  ║   CORRIGIDO - SEM DUPLICAÇÕES         ║
+  ║   COM LOGS EXTRAS PARA DEBUG          ║
   ╚════════════════════════════════════════╝
   
   ✅ Servidor rodando na porta ${PORT}
   ✅ Ambiente: ${process.env.NODE_ENV || 'development'}
   ✅ Stripe: ${process.env.STRIPE_SECRET_KEY ? 'Configurado' : 'Não configurado'}
+  ✅ Email: ${process.env.EMAIL_USER ? process.env.EMAIL_USER : '❌ NÃO CONFIGURADO'}
+  
+  📧 Email Status:
+     USER: ${process.env.EMAIL_USER || '❌ NÃO CONFIGURADO'}
+     PASSWORD: ${process.env.EMAIL_PASSWORD ? '✅ Configurado' : '❌ NÃO CONFIGURADO'}
   
   `);
 });
