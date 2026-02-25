@@ -1,19 +1,13 @@
 {
   "name": "ai-shield-backend",
-  "version": "3.0.0",
-  "description": "AI Shield Backend - Data protection for AI platforms",
+  "version": "3.1.0",
+  "description": "AI-Shield Backend - Data protection for AI",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
-  "keywords": [
-    "ai",
-    "shield",
-    "compliance",
-    "gdpr",
-    "data-protection"
-  ],
+  "keywords": ["ai", "shield", "compliance", "gdpr"],
   "author": "Koller Group",
   "license": "MIT",
   "dependencies": {
@@ -22,8 +16,9 @@
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "nodemailer": "^6.9.6",
+    "resend": "^4.0.0",
     "node-schedule": "^2.1.1",
-    "stripe": "^14.0.0"
+    "stripe": "^12.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
