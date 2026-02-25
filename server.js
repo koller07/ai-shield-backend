@@ -1,14 +1,14 @@
 // ============================================
-// AI SHIELD BACKEND - VERSÃO CORRIGIDA v3.1.0
+// AI SHIELD BACKEND - v3.2.0
 // By Koller Group
-// COM LOGS EXTRAS PARA DEBUG DE EMAIL
+// COM RESEND INTEGRADO
 // ============================================
 
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const schedule = require('node-schedule');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -124,9 +124,10 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     message: 'AI Shield Backend rodando',
-    version: '3.1.0',
+    version: '3.2.0',
     timestamp: new Date().toISOString(),
-    email_configured: !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD)
+    email_service: 'Resend',
+    email_configured: !!process.env.RESEND_API_KEY
   });
 });
 
@@ -145,13 +146,12 @@ app.get('/api/test-email', async (req, res) => {
   try {
     console.log('🧪 Testando envio de email...');
     console.log('📧 Para:', to);
-    console.log('📧 De:', process.env.EMAIL_USER);
     
     await sendWelcomeEmail(to, 'Test Company', 'sk_test_123456', 'solo');
     
     res.json({ 
       success: true, 
-      message: 'Email de teste enviado! Verifique a caixa de entrada.'
+      message: 'Email de teste enviado via Resend! Verifique a caixa de entrada.'
     });
   } catch (error) {
     console.error('❌ Erro ao enviar email de teste:', error);
@@ -698,19 +698,18 @@ async function handleCheckoutCompleted(session) {
     console.log('');
     
     console.log('═══════════════════════════════════════════');
-    console.log('📧 INICIANDO ENVIO DE EMAIL...');
+    console.log('📧 INICIANDO ENVIO DE EMAIL VIA RESEND...');
     console.log('═══════════════════════════════════════════');
     console.log('Para:', customer_email);
     console.log('Empresa:', companyName);
     console.log('API Key:', apiKey);
     console.log('Plano:', planType);
-    console.log('EMAIL_USER:', process.env.EMAIL_USER ? 'Configurado' : '❌ NÃO CONFIGURADO');
-    console.log('EMAIL_PASSWORD:', process.env.EMAIL_PASSWORD ? 'Configurado' : '❌ NÃO CONFIGURADO');
+    console.log('RESEND_API_KEY:', process.env.RESEND_API_KEY ? 'Configurada ✅' : '❌ NÃO CONFIGURADA');
     console.log('');
     
     try {
       await sendWelcomeEmail(customer_email, companyName, apiKey, planType);
-      console.log('✅ ✅ ✅ EMAIL ENVIADO COM SUCESSO!');
+      console.log('✅ ✅ ✅ EMAIL ENVIADO COM SUCESSO VIA RESEND!');
     } catch (emailError) {
       console.error('❌ ❌ ❌ ERRO AO ENVIAR EMAIL:', emailError);
       console.error('Stack do erro de email:', emailError.stack);
@@ -937,7 +936,7 @@ app.get('/api/admin/stats', async (req, res) => {
 });
 
 // ============================================
-// EMAIL
+// EMAIL COM RESEND
 // ============================================
 
 async function sendWelcomeEmail(email, companyName, apiKey, planType) {
@@ -947,23 +946,17 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
   console.log('   API Key:', apiKey);
   console.log('   Plano:', planType);
   
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-    console.error('❌ EMAIL_USER ou EMAIL_PASSWORD não configurados!');
-    throw new Error('Credenciais de email não configuradas');
+  if (!process.env.RESEND_API_KEY) {
+    console.error('❌ RESEND_API_KEY não configurada!');
+    throw new Error('RESEND_API_KEY não configurada');
   }
   
-  console.log('✅ Credenciais de email OK');
-  console.log('📧 Criando transporter...');
+  console.log('✅ RESEND_API_KEY configurada');
+  console.log('📧 Inicializando Resend...');
   
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASSWORD
-    }
-  });
+  const resend = new Resend(process.env.RESEND_API_KEY);
   
-  console.log('✅ Transporter criado');
+  console.log('✅ Resend inicializado');
   
   const planNames = {
     solo: 'Solo (1 usuário)',
@@ -1004,6 +997,7 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
       margin: 20px 0;
       font-family: 'Monaco', 'Courier New', monospace;
       word-break: break-all;
+      font-size: 14px;
     }
     .steps {
       background: white;
@@ -1082,7 +1076,7 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
     <h3>💬 Precisa de ajuda?</h3>
     <p>Nossa equipe está aqui para ajudar:</p>
     <ul>
-      <li>📧 Email: ${process.env.EMAIL_USER}</li>
+      <li>📧 Email: support@getaishield.eu</li>
       <li>🌐 Site: https://getaishield.eu</li>
     </ul>
   </div>
@@ -1095,26 +1089,28 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
 </html>
   `;
   
-  console.log('📧 Preparando para enviar email...');
+  console.log('📧 Preparando para enviar email via Resend...');
   
   try {
-    const info = await transporter.sendMail({
-      from: `"AI Shield" <${process.env.EMAIL_USER}>`,
-      to: email,
+    const { data, error } = await resend.emails.send({
+      from: 'AI Shield <onboarding@resend.dev>',
+      to: [email],
       subject: '🛡️ Bem-vindo ao AI Shield - Sua API Key',
       html: html
     });
     
-    console.log('✅ ✅ ✅ EMAIL ENVIADO!');
-    console.log('📧 Message ID:', info.messageId);
-    console.log('📧 Response:', info.response);
+    if (error) {
+      console.error('❌ ❌ ❌ ERRO DO RESEND:', error);
+      throw error;
+    }
+    
+    console.log('✅ ✅ ✅ EMAIL ENVIADO VIA RESEND!');
+    console.log('📧 Email ID:', data.id);
     
   } catch (error) {
     console.error('❌ ❌ ❌ ERRO AO ENVIAR EMAIL:');
     console.error('   Tipo:', error.name);
     console.error('   Mensagem:', error.message);
-    console.error('   Code:', error.code);
-    console.error('   Response:', error.response);
     console.error('   Stack:', error.stack);
     throw error;
   }
@@ -1147,19 +1143,20 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`
   ╔════════════════════════════════════════╗
-  ║   🛡️  AI SHIELD BACKEND v3.1.0        ║
+  ║   🛡️  AI SHIELD BACKEND v3.2.0        ║
   ║   By Koller Group                     ║
-  ║   COM LOGS EXTRAS PARA DEBUG          ║
+  ║   COM RESEND INTEGRADO                ║
   ╚════════════════════════════════════════╝
   
   ✅ Servidor rodando na porta ${PORT}
   ✅ Ambiente: ${process.env.NODE_ENV || 'development'}
   ✅ Stripe: ${process.env.STRIPE_SECRET_KEY ? 'Configurado' : 'Não configurado'}
-  ✅ Email: ${process.env.EMAIL_USER ? process.env.EMAIL_USER : '❌ NÃO CONFIGURADO'}
+  ✅ Email: Resend ${process.env.RESEND_API_KEY ? '✅ Configurado' : '❌ NÃO CONFIGURADO'}
   
-  📧 Email Status:
-     USER: ${process.env.EMAIL_USER || '❌ NÃO CONFIGURADO'}
-     PASSWORD: ${process.env.EMAIL_PASSWORD ? '✅ Configurado' : '❌ NÃO CONFIGURADO'}
+  📧 Email Config:
+     Service: Resend
+     API Key: ${process.env.RESEND_API_KEY ? '✅ Configurada' : '❌ NÃO CONFIGURADA'}
+     From: onboarding@resend.dev (temporário)
   
   `);
 });
