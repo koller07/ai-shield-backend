@@ -1135,6 +1135,50 @@ schedule.scheduleJob('0 8 1 * *', async () => {
   }
 });
 
+// === ENDPOINT DE TESTE DE EMAIL ===
+
+app.get('/api/test-email-send', async (req, res) => {
+  const { to } = req.query;
+  
+  if (!to) {
+    return res.status(400).json({ 
+      error: 'Parâmetro obrigatório ausente',
+      usage: 'GET /api/test-email-send?to=seu-email@example.com'
+    });
+  }
+  
+  console.log('');
+  console.log('═══════════════════════════════════════════');
+  console.log('TEST: Endpoint de teste de email chamado');
+  console.log('Para:', to);
+  console.log('═══════════════════════════════════════════');
+  
+  try {
+    await sendWelcomeEmail(to, 'Test Company', 'sk_test_12345', 'solo');
+    
+    console.log('✅ Email de teste enviado com sucesso');
+    console.log('═══════════════════════════════════════════');
+    console.log('');
+    
+    res.json({ 
+      success: true,
+      message: 'Email de teste enviado com sucesso',
+      sentTo: to,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Erro ao enviar email de teste:', error);
+    console.log('═══════════════════════════════════════════');
+    console.log('');
+    
+    res.status(500).json({ 
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // ============================================
 // INICIAR SERVIDOR
 // ============================================
