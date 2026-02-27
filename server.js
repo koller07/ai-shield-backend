@@ -936,7 +936,8 @@ app.get('/api/admin/stats', async (req, res) => {
 });
 
 // ============================================
-// EMAIL COM RESEND
+// EMAIL COM RESEND - VERSÃO EM INGLÊS
+// Substitua a função sendWelcomeEmail existente
 // ============================================
 
 async function sendWelcomeEmail(email, companyName, apiKey, planType) {
@@ -959,9 +960,9 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
   console.log('✅ Resend inicializado');
   
   const planNames = {
-    solo: 'Solo (1 usuário)',
-    team: 'Team (até 10 usuários)',
-    enterprise: 'Enterprise (ilimitado)'
+    solo: 'Solo (1 user)',
+    team: 'Team (up to 10 users)',
+    enterprise: 'Enterprise (unlimited)'
   };
   
   const html = `
@@ -1038,46 +1039,46 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
 </head>
 <body>
   <div class="header">
-    <h1>🛡️ Bem-vindo ao AI Shield!</h1>
-    <p>Sua conta está ativa e pronta para proteger seus dados</p>
+    <h1>Welcome to AI Shield!</h1>
+    <p>Your account is active and ready to protect your data</p>
   </div>
   
   <div class="content">
-    <p>Olá <strong>${companyName}</strong>,</p>
+    <p>Hello <strong>${companyName}</strong>,</p>
     
-    <p>Obrigado por escolher o AI Shield! Sua assinatura do plano <strong>${planNames[planType]}</strong> está ativa.</p>
+    <p>Thank you for choosing AI Shield! Your <strong>${planNames[planType]}</strong> subscription is now active.</p>
     
-    <h3>🔑 Sua API Key:</h3>
+    <h3>🔑 Your API Key:</h3>
     <div class="api-key-box">
       ${apiKey}
     </div>
-    <p><strong>⚠️ Importante:</strong> Guarde esta API Key em segurança. Você precisará dela para configurar a extensão.</p>
+    <p><strong>⚠️ Important:</strong> Keep this API Key secure. You'll need it to configure the extension.</p>
     
-    <h3>📋 Próximos passos:</h3>
+    <h3>📋 Next steps:</h3>
     <div class="steps">
       <div class="step">
-        <strong>1. Instale a extensão:</strong><br>
-        Vá para a Chrome Web Store e instale a extensão AI Shield
+        <strong>1. Install the extension:</strong><br>
+        Go to the Chrome Web Store and install the AI Shield extension
       </div>
       <div class="step">
-        <strong>2. Configure a extensão:</strong><br>
-        Clique no ícone da extensão e cole sua API Key
+        <strong>2. Configure the extension:</strong><br>
+        Click on the extension icon and paste your API Key
       </div>
       <div class="step">
-        <strong>3. Proteja seus dados:</strong><br>
-        A extensão começará a monitorar automaticamente
+        <strong>3. Protect your data:</strong><br>
+        The extension will start monitoring automatically
       </div>
     </div>
     
     <center>
-      <a href="https://chrome.google.com/webstore" class="button">Instalar Extensão Agora</a>
+      <a href="https://chrome.google.com/webstore" class="button">Install Extension Now</a>
     </center>
     
-    <h3>💬 Precisa de ajuda?</h3>
-    <p>Nossa equipe está aqui para ajudar:</p>
+    <h3>💬 Need help?</h3>
+    <p>Our team is here to help:</p>
     <ul>
       <li>📧 Email: support@getaishield.eu</li>
-      <li>🌐 Site: https://getaishield.eu</li>
+      <li>🌐 Website: https://getaishield.eu</li>
     </ul>
   </div>
   
@@ -1095,7 +1096,7 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
     const { data, error } = await resend.emails.send({
       from: 'AI Shield <onboarding@resend.dev>',
       to: [email],
-      subject: '🛡️ Bem-vindo ao AI Shield - Sua API Key',
+      subject: '🛡️ Welcome to AI Shield - Your API Key',
       html: html
     });
     
