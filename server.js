@@ -1115,8 +1115,10 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
     throw error;
   }
 }
+// ============================================
+// RELATÓRIOS MENSAIS AUTOMÁTICOS
+// ============================================
 
-// Relatórios mensais automáticos
 schedule.scheduleJob('0 8 1 * *', async () => {
   console.log('📧 Enviando relatórios mensais...');
   
@@ -1135,8 +1137,9 @@ schedule.scheduleJob('0 8 1 * *', async () => {
   }
 });
 
-// === ENDPOINT DE TESTE DE EMAIL ===
-
+// ============================================
+// ENDPOINT DE TESTE DE EMAIL
+// ============================================
 app.get('/api/test-email-send', async (req, res) => {
   const { to } = req.query;
   
@@ -1149,8 +1152,8 @@ app.get('/api/test-email-send', async (req, res) => {
   
   console.log('');
   console.log('═══════════════════════════════════════════');
-  console.log('TEST: Endpoint de teste de email chamado');
-  console.log('Para:', to);
+  console.log('🧪 TEST: Endpoint de teste de email chamado');
+  console.log('📧 Para:', to);
   console.log('═══════════════════════════════════════════');
   
   try {
@@ -1168,12 +1171,14 @@ app.get('/api/test-email-send', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Erro ao enviar email de teste:', error);
+    console.error('Detalhes:', error.message);
     console.log('═══════════════════════════════════════════');
     console.log('');
     
     res.status(500).json({ 
       success: false,
       error: error.message,
+      details: error.stack,
       timestamp: new Date().toISOString()
     });
   }
