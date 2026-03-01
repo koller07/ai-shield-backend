@@ -1,7 +1,7 @@
 // ============================================
 // AI SHIELD BACKEND - v3.2.0
 // By Koller Group
-// COM RESEND INTEGRADO
+// COM RESEND INTEGRADO + TRIAL DE 14 DIAS
 // ============================================
 
 const express = require('express');
@@ -127,7 +127,8 @@ app.get('/api/health', (req, res) => {
     version: '3.2.0',
     timestamp: new Date().toISOString(),
     email_service: 'Resend',
-    email_configured: !!process.env.RESEND_API_KEY
+    email_configured: !!process.env.RESEND_API_KEY,
+    trial_days: 14
   });
 });
 
@@ -558,6 +559,7 @@ app.post('/api/checkout', async (req, res) => {
         source: 'ai-shield-website'
       },
       subscription_data: {
+        trial_period_days: 14,  // ✅ TRIAL DE 14 DIAS ADICIONADO AQUI!
         metadata: {
           companyName: companyName,
           planType: planType || 'team'
@@ -566,6 +568,7 @@ app.post('/api/checkout', async (req, res) => {
     });
     
     console.log(`✅ Checkout session criada: ${session.id}`);
+    console.log(`🎁 Trial de 14 dias incluído`);
     
     res.json({ 
       sessionId: session.id,
@@ -663,6 +666,7 @@ async function handleCheckoutCompleted(session) {
   console.log('🔍 Recuperando subscription do Stripe...');
   const stripeSubscription = await stripe.subscriptions.retrieve(subscription);
   console.log('✅ Subscription recuperada:', stripeSubscription.id);
+  console.log('🎁 Status:', stripeSubscription.status, '(trialing ou active)');
   
   const apiKey = generateApiKey(planType);
   const maxUsers = planType === 'solo' ? 1 : planType === 'team' ? 10 : 999999;
@@ -688,7 +692,7 @@ async function handleCheckoutCompleted(session) {
         stripeSubscription.customer,
         stripeSubscription.id,
         true,
-        'active'
+        stripeSubscription.status  // Será 'trialing' ou 'active'
       ]
     );
     
@@ -728,6 +732,7 @@ async function handleCheckoutCompleted(session) {
 
 async function handleSubscriptionUpdated(subscription) {
   console.log(`🔄 Subscription atualizada: ${subscription.id}`);
+  console.log(`📊 Novo status: ${subscription.status}`);
   
   try {
     await pool.query(
@@ -771,7 +776,9 @@ app.get('/api/stripe/test', async (req, res) => {
       success: true,
       message: 'Stripe conectado!',
       products: products.data.map(p => ({ id: p.id, name: p.name })),
-      testMode: process.env.STRIPE_SECRET_KEY?.includes('test') || false
+      testMode: process.env.STRIPE_SECRET_KEY?.includes('test') || false,
+      trialEnabled: true,
+      trialDays: 14
     });
   } catch (error) {
     res.status(500).json({
@@ -937,7 +944,6 @@ app.get('/api/admin/stats', async (req, res) => {
 
 // ============================================
 // EMAIL COM RESEND - VERSÃO EM INGLÊS
-// Substitua a função sendWelcomeEmail existente
 // ============================================
 
 async function sendWelcomeEmail(email, companyName, apiKey, planType) {
@@ -1035,18 +1041,30 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
       font-size: 12px;
       margin-top: 30px;
     }
+    .trial-badge {
+      background: #22c55e;
+      color: white;
+      padding: 8px 16px;
+      border-radius: 20px;
+      display: inline-block;
+      font-weight: 600;
+      margin: 10px 0;
+    }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>Welcome to AI Shield!</h1>
+    <h1>🛡️ Welcome to AI Shield!</h1>
     <p>Your account is active and ready to protect your data</p>
+    <div class="trial-badge">🎁 14-Day Free Trial Included</div>
   </div>
   
   <div class="content">
     <p>Hello <strong>${companyName}</strong>,</p>
     
     <p>Thank you for choosing AI Shield! Your <strong>${planNames[planType]}</strong> subscription is now active.</p>
+    
+    <p><strong>🎁 Your 14-day free trial starts now!</strong> You won't be charged until the trial ends, and you can cancel anytime.</p>
     
     <h3>🔑 Your API Key:</h3>
     <div class="api-key-box">
@@ -1096,7 +1114,7 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
     const { data, error } = await resend.emails.send({
       from: 'AI Shield <onboarding@resend.dev>',
       to: [email],
-      subject: '🛡️ Welcome to AI Shield - Your API Key',
+      subject: '🛡️ Welcome to AI Shield - Your API Key (14-Day Free Trial)',
       html: html
     });
     
@@ -1116,6 +1134,7 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
     throw error;
   }
 }
+
 // ============================================
 // RELATÓRIOS MENSAIS AUTOMÁTICOS
 // ============================================
@@ -1202,6 +1221,7 @@ app.listen(PORT, () => {
   ✅ Ambiente: ${process.env.NODE_ENV || 'development'}
   ✅ Stripe: ${process.env.STRIPE_SECRET_KEY ? 'Configurado' : 'Não configurado'}
   ✅ Email: Resend ${process.env.RESEND_API_KEY ? '✅ Configurado' : '❌ NÃO CONFIGURADO'}
+  🎁 Trial: 14 dias (configurado no checkout)
   
   📧 Email Config:
      Service: Resend
