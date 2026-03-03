@@ -1112,7 +1112,7 @@ async function sendWelcomeEmail(email, companyName, apiKey, planType) {
   
   try {
     const { data, error } = await resend.emails.send({
-      from: 'AI Shield <onboarding@resend.dev>',
+      from: 'AI Shield <no-reply@getaishield.eu>',
       to: [email],
       subject: '🛡️ Welcome to AI Shield - Your API Key (14-Day Free Trial)',
       html: html
