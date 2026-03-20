@@ -65,3 +65,33 @@ CREATE TRIGGER update_companies_updated_at BEFORE UPDATE ON companies
 
 CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+```
+
+### **PASSO 3: Salvar**
+1. Scroll para baixo
+2. Em "Commit message" escrever: `Update database schema with authentication`
+3. Clicar **"Commit changes"**
+
+---
+
+### **PASSO 4: Railway vai Re-deploy Automático**
+
+O Railway detecta a mudança no GitHub e faz redeploy automático.
+
+**AGUARDE 2-3 MINUTOS**
+
+---
+
+### **PASSO 5: Verificar Logs do Railway**
+
+1. Voltar para Railway
+2. Abrir "Deployments" 
+3. Ver o novo deploy
+4. Clicar em "View Logs"
+
+**DEVE VER:**
+```
+✓ Database tables initialized
+✓ Database connected
+✓ AI-Shield Backend running on port 3000
+✓ JWT Authentication: ENABLED
