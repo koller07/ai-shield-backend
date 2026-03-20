@@ -56,23 +56,3 @@ CREATE INDEX idx_detections_user ON detections(user_id);
 CREATE INDEX idx_detections_timestamp ON detections(timestamp);
 CREATE INDEX idx_companies_email ON companies(admin_email);
 ```
-
-6. **Commit changes**: `Fix SQL syntax - simplified schema`
-
----
-
-### **PASSO 3: AGUARDAR REDEPLOY**
-
-Railway vai detectar a mudança e fazer redeploy automático (2-3 minutos)
-
----
-
-### **PASSO 4: VERIFICAR LOGS**
-
-Depois do redeploy, os logs DEVEM mostrar:
-```
-✅ Database tables initialized
-✅ Database connected: { now: 2026-03-20... }
-✅ AI-Shield Backend running on port 3000
-✅ Environment: production
-✅ JWT Authentication: ENABLED
