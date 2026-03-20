@@ -39,17 +39,17 @@ pool.query('SELECT NOW()', (err, res) => {
 });
 
 // Initialize database tables
-async function initializeDatabase() {
-  try {
-    const sql = fs.readFileSync('./init.sql', 'utf8');
-    await pool.query(sql);
-    console.log('Database tables initialized');
-  } catch (error) {
-    console.error('Error initializing database:', error);
-  }
-}
-
-initializeDatabase();
+//async function initializeDatabase() {
+// try {
+//  const sql = fs.readFileSync('./init.sql', 'utf8');
+//await pool.query(sql);
+//console.log('Database tables initialized');
+//} catch (error) {
+// console.error('Error initializing database:', error);
+//}
+//}
+//
+//initializeDatabase();
 
 // ============================================
 // MIDDLEWARE DE AUTENTICAÇÃO
