@@ -559,7 +559,47 @@ async function sendWelcomeEmail(email, name, companyName) {
     console.error('Error sending welcome email:', error);
   }
 }
-
+// Dashboard Statistics
+app.get('/api/dashboard/stats/:companyId', authenticateToken, async (req, res) => {
+  const { companyId } = req.params;
+  
+  try {
+    // Total detections all time
+    const totalResult = await pool.query(
+      'SELECT COUNT(*) as total FROM detections WHERE company_id = $1',
+      [companyId]
+    );
+    
+    // Monthly detections (last 30 days)
+    const monthlyResult = await pool.query(
+      `SELECT COUNT(*) as monthly FROM detections 
+       WHERE company_id = $1 
+       AND timestamp > NOW() - INTERVAL '30 days'`,
+      [companyId]
+    );
+    
+    // Active users (distinct users who triggered detections)
+    const usersResult = await pool.query(
+      'SELECT COUNT(DISTINCT user_id) as users FROM detections WHERE company_id = $1',
+      [companyId]
+    );
+    
+    const totalDetections = parseInt(totalResult.rows[0].total) || 0;
+    const monthlyDetections = parseInt(monthlyResult.rows[0].monthly) || 0;
+    const activeUsers = parseInt(usersResult.rows[0].users) || 1;
+    
+    res.json({
+      totalDetections,
+      monthlyDetections,
+      activeUsers,
+      finesPrevented: totalDetections * 50000
+    });
+    
+  } catch (error) {
+    console.error('Error loading dashboard stats:', error);
+    res.status(500).json({ error: 'Failed to load statistics' });
+  }
+});
 // ============================================
 // START SERVER
 // ============================================
