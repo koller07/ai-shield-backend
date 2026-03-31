@@ -600,6 +600,127 @@ app.get('/api/dashboard/stats/:companyId', authenticateToken, async (req, res) =
     res.status(500).json({ error: 'Failed to load statistics' });
   }
 });
+// ===============================
+// COMPANY UPDATE
+// ===============================
+app.put('/api/company/:companyId', authenticateToken, async (req, res) => {
+  const { companyId } = req.params;
+  const { name, admin_email, industry } = req.body;
+  
+  try {
+    await pool.query(
+      'UPDATE companies SET name = $1, admin_email = $2, industry = $3 WHERE id = $4',
+      [name, admin_email, industry, companyId]
+    );
+    
+    res.json({ success: true, message: 'Company updated' });
+  } catch (error) {
+    console.error('Error updating company:', error);
+    res.status(500).json({ error: 'Failed to update company' });
+  }
+});
+
+// ===============================
+// SETTINGS UPDATE
+// ===============================
+app.put('/api/settings/:companyId', authenticateToken, async (req, res) => {
+  const { companyId } = req.params;
+  const { alert_critical, email_notifications, weekly_digest } = req.body;
+  
+  try {
+    // Criar tabela settings se não existir
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS settings (
+        company_id UUID PRIMARY KEY REFERENCES companies(id),
+        alert_critical BOOLEAN DEFAULT true,
+        email_notifications BOOLEAN DEFAULT true,
+        weekly_digest BOOLEAN DEFAULT true,
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    
+    // Inserir ou atualizar settings
+    await pool.query(`
+      INSERT INTO settings (company_id, alert_critical, email_notifications, weekly_digest)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (company_id)
+      DO UPDATE SET
+        alert_critical = COALESCE($2, settings.alert_critical),
+        email_notifications = COALESCE($3, settings.email_notifications),
+        weekly_digest = COALESCE($4, settings.weekly_digest),
+        updated_at = NOW()
+    `, [companyId, alert_critical, email_notifications, weekly_digest]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error updating settings:', error);
+    res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+
+// ===============================
+// GET SETTINGS
+// ===============================
+app.get('/api/settings/:companyId', authenticateToken, async (req, res) => {
+  const { companyId } = req.params;
+  
+  try {
+    const result = await pool.query(
+      'SELECT * FROM settings WHERE company_id = $1',
+      [companyId]
+    );
+    
+    if (result.rows.length === 0) {
+      // Retornar defaults se não existir
+      res.json({
+        alert_critical: true,
+        email_notifications: true,
+        weekly_digest: true
+      });
+    } else {
+      res.json(result.rows[0]);
+    }
+  } catch (error) {
+    console.error('Error loading settings:', error);
+    res.json({
+      alert_critical: true,
+      email_notifications: true,
+      weekly_digest: true
+    });
+  }
+});
+
+// ===============================
+// SUBSCRIPTION INFO
+// ===============================
+app.get('/api/subscription/:companyId', authenticateToken, async (req, res) => {
+  const { companyId } = req.params;
+  
+  try {
+    const company = await pool.query(
+      'SELECT * FROM companies WHERE id = $1',
+      [companyId]
+    );
+    
+    if (company.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+    
+    // Por enquanto retornar hardcoded (integrar Stripe depois)
+    const nextPayment = new Date();
+    nextPayment.setMonth(nextPayment.getMonth() + 1);
+    
+    res.json({
+      plan: company.rows[0].plan || 'Team',
+      billing_cycle: 'Monthly',
+      next_payment: nextPayment.toISOString().split('T')[0],
+      payment_method: 'Coming soon'
+    });
+  } catch (error) {
+    console.error('Error loading subscription:', error);
+    res.status(500).json({ error: 'Failed to load subscription' });
+  }
+});
 // ============================================
 // START SERVER
 // ============================================
