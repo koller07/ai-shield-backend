@@ -16,8 +16,12 @@ const fs = require('fs');
 dotenv.config();
 
 const app = express();
+app.use('/billing/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 app.use(cors());
+app.use('/billing',    require('./routes/billing'));
+app.use('/detections', require('./routes/detections'));
+
 
 // JWT Secret (adicionar no .env: JWT_SECRET=sua-chave-secreta-muito-longa)
 const JWT_SECRET = process.env.JWT_SECRET || 'ai-shield-secret-key-change-in-production';
@@ -726,6 +730,7 @@ app.get('/api/subscription/:companyId', authenticateToken, async (req, res) => {
 // ============================================
 
 const PORT = process.env.PORT || 3000;
+require('./cron');
 app.listen(PORT, () => {
   console.log(`AI-Shield Backend running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
