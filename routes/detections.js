@@ -1,214 +1,228 @@
 // ================================================================
-// routes/detections.js — v2
-// Funcionário POST → envia detecção da sua extensão
-// Manager GET → lê TODAS as detecções da empresa
+// AI Shield — Detections Routes
+// Endpoints: /summary, /my, /all, /team-members
 // ================================================================
 
-const express  = require('express');
-const { Pool } = require('pg');
-const auth     = require('../middleware/auth');
-const { managerOnly } = require('../middleware/auth');
-const router   = express.Router();
-const pool     = new Pool({ connectionString: process.env.DATABASE_URL });
+const express = require(‘express’);
+const router  = express.Router();
+const auth    = require(’../middleware/auth’);
+const db      = require(’../db’);
 
-// ── POST /detections ─────────────────────────────────────
-// Chamado pela extensão Chrome do funcionário
-// Qualquer utilizador autenticado pode enviar (manager ou employee)
-router.post('/', auth, async (req, res) => {
-  const { platform, dataType, wasBlocked, employeeAction, urlHost } = req.body;
+// ── GET /detections/summary ────────────────────────────────────
+// Returns aggregated stats for dashboard overview
+router.get(’/summary’, auth, async (req, res) => {
+try {
+const company_id = req.user.company_id;
 
-  if (!platform || !dataType) {
-    return res.status(400).json({ error: 'platform e dataType são obrigatórios' });
-  }
+```
+// Total detections for this company
+const totalResult = await db.query(
+  `SELECT COUNT(*) as count FROM detections WHERE company_id = $1`,
+  [company_id]
+);
+const total = parseInt(totalResult.rows[0]?.count || 0);
 
-  const monthYear = new Date().toISOString().slice(0, 7);
+// Last 24h
+const h24Result = await db.query(
+  `SELECT COUNT(*) as count FROM detections 
+   WHERE company_id = $1 AND detected_at > NOW() - INTERVAL '24 hours'`,
+  [company_id]
+);
+const total_24h = parseInt(h24Result.rows[0]?.count || 0);
 
-  try {
-    await pool.query(
-      `INSERT INTO detections
-         (user_id, company_id, platform, data_type, was_blocked, employee_action, url_host, month_year)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [
-        req.user.userId,
-        req.user.companyId,
-        platform.toLowerCase(),
-        dataType.toUpperCase(),
-        wasBlocked !== false,
-        employeeAction || null,
-        urlHost || null,
-        monthYear,
-      ]
-    );
+// Last 7 days
+const d7Result = await db.query(
+  `SELECT COUNT(*) as count FROM detections 
+   WHERE company_id = $1 AND detected_at > NOW() - INTERVAL '7 days'`,
+  [company_id]
+);
+const total_7d = parseInt(d7Result.rows[0]?.count || 0);
 
-    res.status(201).json({ ok: true });
+// Last 30 days
+const d30Result = await db.query(
+  `SELECT COUNT(*) as count FROM detections 
+   WHERE company_id = $1 AND detected_at > NOW() - INTERVAL '30 days'`,
+  [company_id]
+);
+const total_30d = parseInt(d30Result.rows[0]?.count || 0);
 
-  } catch (err) {
-    console.error('POST /detections:', err);
-    res.status(500).json({ error: 'Erro ao guardar detecção.' });
-  }
+// By platform (for doughnut chart)
+const platformResult = await db.query(
+  `SELECT platform, COUNT(*) as count 
+   FROM detections 
+   WHERE company_id = $1 
+   GROUP BY platform 
+   ORDER BY count DESC`,
+  [company_id]
+);
+const byPlatform = {};
+platformResult.rows.forEach(row => {
+  byPlatform[row.platform] = parseInt(row.count);
 });
 
-// ── GET /detections ──────────────────────────────────────
-// MANAGER ONLY — lista detecções de todos os funcionários da empresa
-// Query params: ?month=2026-04&userId=xxx&platform=chatgpt
-router.get('/', managerOnly, async (req, res) => {
-  const {
-    month    = new Date().toISOString().slice(0, 7),
-    userId,
-    platform,
-    limit    = 500,
-  } = req.query;
-
-  try {
-    let query = `
-      SELECT
-        d.id, d.platform, d.data_type, d.was_blocked,
-        d.employee_action, d.url_host, d.detected_at,
-        u.name AS employee_name, u.email AS employee_email
-      FROM detections d
-      JOIN users u ON u.id = d.user_id
-      WHERE d.company_id = $1 AND d.month_year = $2
-    `;
-    const params = [req.user.companyId, month];
-
-    if (userId) {
-      params.push(userId);
-      query += ` AND d.user_id = $${params.length}`;
-    }
-    if (platform) {
-      params.push(platform.toLowerCase());
-      query += ` AND d.platform = $${params.length}`;
-    }
-
-    query += ` ORDER BY d.detected_at DESC LIMIT $${params.length + 1}`;
-    params.push(Math.min(parseInt(limit), 1000));
-
-    const { rows } = await pool.query(query, params);
-
-    // Summary by type
-    const byType     = rows.reduce((a, r) => ({ ...a, [r.data_type]:  (a[r.data_type]  || 0) + 1 }), {});
-    const byPlatform = rows.reduce((a, r) => ({ ...a, [r.platform]:   (a[r.platform]   || 0) + 1 }), {});
-    const byEmployee = rows.reduce((a, r) => ({
-      ...a,
-      [r.employee_email]: {
-        name:  r.employee_name,
-        email: r.employee_email,
-        count: ((a[r.employee_email]?.count) || 0) + 1,
-      }
-    }), {});
-
-    res.json({
-      month,
-      total:      rows.length,
-      blocked:    rows.filter(r => r.was_blocked).length,
-      detections: rows,
-      byType,
-      byPlatform,
-      byEmployee: Object.values(byEmployee),
-    });
-
-  } catch (err) {
-    console.error('GET /detections:', err);
-    res.status(500).json({ error: 'Erro ao buscar detecções.' });
-  }
+// By data type (for top types)
+const typeResult = await db.query(
+  `SELECT data_type, COUNT(*) as count 
+   FROM detections 
+   WHERE company_id = $1 
+   GROUP BY data_type 
+   ORDER BY count DESC 
+   LIMIT 6`,
+  [company_id]
+);
+const byDataType = {};
+typeResult.rows.forEach(row => {
+  byDataType[row.data_type] = parseInt(row.count);
 });
 
-// ── GET /detections/summary ──────────────────────────────
-// MANAGER ONLY — cards de resumo no topo do dashboard
-router.get('/summary', managerOnly, async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `SELECT
-         COUNT(*) FILTER (WHERE detected_at >= NOW() - INTERVAL '30 days') AS total_30d,
-         COUNT(*) FILTER (WHERE detected_at >= NOW() - INTERVAL '7 days')  AS total_7d,
-         COUNT(*) FILTER (WHERE detected_at >= NOW() - INTERVAL '24 hours') AS total_24h,
-         COUNT(*) FILTER (WHERE was_blocked AND detected_at >= NOW() - INTERVAL '30 days') AS blocked_30d,
-         COUNT(DISTINCT user_id) FILTER (WHERE detected_at >= NOW() - INTERVAL '30 days') AS active_employees
-       FROM detections
-       WHERE company_id = $1`,
-      [req.user.companyId]
-    );
+// Employee count
+const empResult = await db.query(
+  `SELECT COUNT(*) as count FROM users 
+   WHERE company_id = $1 AND role = 'employee' AND is_active = true`,
+  [company_id]
+);
+const employee_count = parseInt(empResult.rows[0]?.count || 0);
 
-    const { rows: topTypes } = await pool.query(
-      `SELECT data_type, COUNT(*) AS count
-       FROM detections
-       WHERE company_id = $1 AND detected_at >= NOW() - INTERVAL '30 days'
-       GROUP BY data_type ORDER BY count DESC LIMIT 5`,
-      [req.user.companyId]
-    );
+res.json({
+  total,
+  total_24h,
+  total_7d,
+  total_30d,
+  byPlatform,
+  byDataType,
+  employee_count,
+});
+```
 
-    res.json({ ...rows[0], topDataTypes: topTypes });
-
-  } catch (err) {
-    console.error('GET /detections/summary:', err);
-    res.status(500).json({ error: 'Erro ao buscar resumo.' });
-  }
+} catch (err) {
+console.error(‘GET /detections/summary error:’, err);
+res.status(500).json({ error: ‘Failed to load summary’ });
+}
 });
 
-// ── GET /detections/my ───────────────────────────────────
-// EMPLOYEE — só as suas próprias detecções (para o popup da extensão)
-router.get('/my', auth, async (req, res) => {
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+// ── GET /detections/my ─────────────────────────────────────────
+// Returns detection count for the logged-in employee
+router.get(’/my’, auth, async (req, res) => {
+try {
+const user_id = req.user.id;
 
-  try {
-    const { rows } = await pool.query(
-      `SELECT COUNT(*) AS count_today
-       FROM detections
-       WHERE user_id = $1
-         AND detected_at::date = $2`,
-      [req.user.userId, today]
-    );
+```
+// Today's count
+const result = await db.query(
+  `SELECT COUNT(*) as count FROM detections 
+   WHERE user_id = $1 AND detected_at::date = CURRENT_DATE`,
+  [user_id]
+);
+const countToday = parseInt(result.rows[0]?.count || 0);
 
-    res.json({
-      countToday: parseInt(rows[0]?.count_today) || 0,
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Erro interno.' });
-  }
+res.json({ countToday });
+```
+
+} catch (err) {
+console.error(‘GET /detections/my error:’, err);
+res.status(500).json({ error: ‘Failed to load detections’ });
+}
 });
 
-// ── GET /detections/report ───────────────────────────────
-// MANAGER ONLY — relatório GDPR exportável
-router.get('/report', managerOnly, async (req, res) => {
-  const month = req.query.month || new Date().toISOString().slice(0, 7);
+// ── GET /detections/all ────────────────────────────────────────
+// Returns all detections for the company (for manager dashboard)
+router.get(’/all’, auth, async (req, res) => {
+try {
+const company_id = req.user.company_id;
+const limit      = parseInt(req.query.limit) || 100;
+const offset     = parseInt(req.query.offset) || 0;
 
-  try {
-    const company = await pool.query(
-      'SELECT name FROM companies WHERE id = $1', [req.user.companyId]
-    );
+```
+const result = await db.query(
+  `SELECT d.*, u.name as user_name, u.email as user_email
+   FROM detections d
+   LEFT JOIN users u ON d.user_id = u.id
+   WHERE d.company_id = $1
+   ORDER BY d.detected_at DESC
+   LIMIT $2 OFFSET $3`,
+  [company_id, limit, offset]
+);
 
-    const { rows } = await pool.query(
-      `SELECT d.platform, d.data_type, d.was_blocked, d.employee_action,
-              d.url_host, d.detected_at,
-              u.name AS employee_name, u.email AS employee_email
-       FROM detections d
-       JOIN users u ON u.id = d.user_id
-       WHERE d.company_id = $1 AND d.month_year = $2
-       ORDER BY d.detected_at ASC`,
-      [req.user.companyId, month]
-    );
+res.json({ detections: result.rows });
+```
 
-    await pool.query(
-      `INSERT INTO audit_logs (company_id, user_id, action, details)
-       VALUES ($1,$2,'report_export',$3)`,
-      [req.user.companyId, req.user.userId, JSON.stringify({ month, total: rows.length })]
-    );
+} catch (err) {
+console.error(‘GET /detections/all error:’, err);
+res.status(500).json({ error: ‘Failed to load detections’ });
+}
+});
 
-    res.json({
-      reportMonth:   month,
-      generatedAt:   new Date().toISOString(),
-      organisation:  company.rows[0]?.name || 'N/A',
-      reportedBy:    req.user.email,
-      framework:     'GDPR Article 32 — Technical Measures Documentation',
-      totalEvents:   rows.length,
-      blocked:       rows.filter(r => r.was_blocked).length,
-      detections:    rows,
-    });
+// ── GET /detections/team-members ───────────────────────────────
+// Returns all employees with their detection counts
+router.get(’/team-members’, auth, async (req, res) => {
+try {
+const company_id = req.user.company_id;
 
-  } catch (err) {
-    console.error('GET /detections/report:', err);
-    res.status(500).json({ error: 'Erro ao gerar relatório.' });
-  }
+```
+const result = await db.query(
+  `SELECT 
+     u.id,
+     u.name,
+     u.email,
+     u.created_at,
+     u.last_login,
+     COUNT(d.id) as detection_count
+   FROM users u
+   LEFT JOIN detections d ON u.id = d.user_id 
+     AND d.detected_at > NOW() - INTERVAL '30 days'
+   WHERE u.company_id = $1 AND u.role = 'employee' AND u.is_active = true
+   GROUP BY u.id, u.name, u.email, u.created_at, u.last_login
+   ORDER BY detection_count DESC, u.name`,
+  [company_id]
+);
+
+const members = result.rows.map(row => ({
+  id:         row.id,
+  name:       row.name || row.email.split('@')[0],
+  email:      row.email,
+  joined:     row.created_at,
+  last_login: row.last_login,
+  detections: parseInt(row.detection_count || 0),
+}));
+
+res.json({ members });
+```
+
+} catch (err) {
+console.error(‘GET /detections/team-members error:’, err);
+res.status(500).json({ error: ‘Failed to load team members’ });
+}
+});
+
+// ── POST /detections ───────────────────────────────────────────
+// Log a new detection from the extension
+router.post(’/’, auth, async (req, res) => {
+try {
+const user_id    = req.user.id;
+const company_id = req.user.company_id;
+const { platform, dataType, action, urlHost } = req.body;
+
+```
+if (!platform || !dataType) {
+  return res.status(400).json({ error: 'Missing required fields' });
+}
+
+const month_year = new Date().toISOString().slice(0,7); // YYYY-MM
+
+await db.query(
+  `INSERT INTO detections 
+   (user_id, company_id, platform, data_type, employee_action, url_host, month_year, detected_at)
+   VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+  [user_id, company_id, platform, dataType, action || 'detected', urlHost, month_year]
+);
+
+res.json({ success: true });
+```
+
+} catch (err) {
+console.error(‘POST /detections error:’, err);
+res.status(500).json({ error: ‘Failed to log detection’ });
+}
 });
 
 module.exports = router;
