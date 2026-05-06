@@ -2,6 +2,11 @@
 // routes/billing.js
 // Stripe checkout, customer portal, and webhook handler
 //
+// Adapted for AI Shield's B2B architecture:
+//   - Subscriptions belong to companies (not users)
+//   - Multiple users can share one subscription
+//   - JWT contains companyId (set by middleware/auth.js)
+//
 // Mount in app.js:
 //   app.use('/billing', require('./routes/billing'))
 //
@@ -23,8 +28,6 @@ const pool   = new Pool({ connectionString: process.env.DATABASE_URL });
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ─── Stripe Price IDs ──────────────────────────────────────
-// Fill these with your actual Stripe Price IDs
-// Dashboard → Products → (product) → Pricing → Copy ID
 const PRICE_IDS = {
   essentials_monthly:  process.env.STRIPE_PRICE_ESSENTIALS_MONTHLY,
   essentials_annual:   process.env.STRIPE_PRICE_ESSENTIALS_ANNUAL,
@@ -34,7 +37,7 @@ const PRICE_IDS = {
   business_annual:     process.env.STRIPE_PRICE_BUSINESS_ANNUAL,
 };
 
-// Max users per plan (for the extension to validate)
+// Max users per plan
 const PLAN_LIMITS = {
   trial:      10,
   essentials: 10,
@@ -44,17 +47,22 @@ const PLAN_LIMITS = {
 };
 
 // ─── GET /billing/status ───────────────────────────────────
-// Dashboard polls this to know current plan + days remaining
+// Returns the company's subscription status
 router.get('/status', auth, async (req, res) => {
   try {
+    const companyId = req.user.companyId;
+    if (!companyId) {
+      return res.status(400).json({ error: 'No company associated with user' });
+    }
+
     const { rows } = await pool.query(
       `SELECT plan, billing_cycle, status,
               trial_ends_at, current_period_end,
               stripe_subscription_id
        FROM subscriptions
-       WHERE user_id = $1
+       WHERE company_id = $1
        ORDER BY created_at DESC LIMIT 1`,
-      [req.user.userId]
+      [companyId]
     );
 
     if (!rows.length) {
@@ -73,13 +81,22 @@ router.get('/status', auth, async (req, res) => {
       );
     }
 
+    // Count active users in the company
+    const { rows: userRows } = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM users WHERE company_id = $1 AND is_active = true`,
+      [companyId]
+    );
+    const activeUsers = userRows[0]?.count || 0;
+
     res.json({
       plan:           sub.plan,
       billingCycle:   sub.billing_cycle,
       status:         sub.status,
       trialDaysLeft,
+      trialEndsAt:    sub.trial_ends_at,
       periodEnd:      sub.current_period_end,
       maxUsers:       PLAN_LIMITS[sub.plan] || 10,
+      activeUsers,
       isActive:       ['trialing', 'active'].includes(sub.status),
     });
 
@@ -94,6 +111,13 @@ router.get('/status', auth, async (req, res) => {
 // Body: { plan: 'compliance', cycle: 'annual' }
 router.post('/checkout', auth, async (req, res) => {
   const { plan, cycle } = req.body;
+  const companyId = req.user.companyId;
+  const userId    = req.user.userId;
+  const userEmail = req.user.email;
+
+  if (!companyId) {
+    return res.status(400).json({ error: 'No company associated with user' });
+  }
 
   if (!plan || !cycle) {
     return res.status(400).json({ error: 'plan and cycle are required' });
@@ -110,26 +134,38 @@ router.post('/checkout', auth, async (req, res) => {
   }
 
   try {
-    // Get or create Stripe customer
+    // Get or create Stripe customer for this company
     const { rows } = await pool.query(
-      `SELECT stripe_customer_id FROM subscriptions WHERE user_id = $1`,
-      [req.user.userId]
+      `SELECT stripe_customer_id FROM subscriptions WHERE company_id = $1
+       ORDER BY created_at DESC LIMIT 1`,
+      [companyId]
     );
 
     let customerId = rows[0]?.stripe_customer_id;
 
     if (!customerId) {
+      // Get company name for the Stripe customer
+      const { rows: companyRows } = await pool.query(
+        `SELECT name FROM companies WHERE id = $1`,
+        [companyId]
+      );
+      const companyName = companyRows[0]?.name || userEmail;
+
       const customer = await stripe.customers.create({
-        email: req.user.email,
-        metadata: { userId: req.user.userId }
+        email: userEmail,
+        name:  companyName,
+        metadata: {
+          companyId,
+          userId
+        }
       });
       customerId = customer.id;
 
       // Save customer ID immediately
       await pool.query(
         `UPDATE subscriptions SET stripe_customer_id = $1
-         WHERE user_id = $2`,
-        [customerId, req.user.userId]
+         WHERE company_id = $2`,
+        [customerId, companyId]
       );
     }
 
@@ -141,27 +177,28 @@ router.post('/checkout', auth, async (req, res) => {
       allow_promotion_codes: true,
       subscription_data: {
         metadata: {
-          userId: req.user.userId,
+          companyId,
+          userId,
           plan,
           cycle
         }
       },
       success_url: `${process.env.FRONTEND_URL}/dashboard?upgraded=true&plan=${plan}`,
-      cancel_url:  `${process.env.FRONTEND_URL}/pricing?canceled=true`,
+      cancel_url:  `${process.env.FRONTEND_URL}/dashboard?canceled=true`,
     });
 
-    // Log
+    // Audit log
     await pool.query(
       `INSERT INTO audit_logs (user_id, action, details)
        VALUES ($1, 'checkout_started', $2)`,
-      [req.user.userId, JSON.stringify({ plan, cycle, sessionId: session.id })]
-    );
+      [userId, JSON.stringify({ plan, cycle, sessionId: session.id, companyId })]
+    ).catch(err => console.warn('audit_logs insert failed (non-critical):', err.message));
 
     res.json({ url: session.url });
 
   } catch (err) {
     console.error('POST /billing/checkout error:', err);
-    res.status(500).json({ error: 'Failed to create checkout session' });
+    res.status(500).json({ error: 'Failed to create checkout session', details: err.message });
   }
 });
 
@@ -169,9 +206,15 @@ router.post('/checkout', auth, async (req, res) => {
 // Opens Stripe Customer Portal (manage plan, cancel, update card)
 router.post('/portal', auth, async (req, res) => {
   try {
+    const companyId = req.user.companyId;
+    if (!companyId) {
+      return res.status(400).json({ error: 'No company associated with user' });
+    }
+
     const { rows } = await pool.query(
-      `SELECT stripe_customer_id FROM subscriptions WHERE user_id = $1`,
-      [req.user.userId]
+      `SELECT stripe_customer_id FROM subscriptions WHERE company_id = $1
+       ORDER BY created_at DESC LIMIT 1`,
+      [companyId]
     );
 
     const customerId = rows[0]?.stripe_customer_id;
@@ -197,7 +240,6 @@ router.post('/portal', auth, async (req, res) => {
 
 // ─── POST /billing/webhook ─────────────────────────────────
 // Stripe sends events here. Must receive raw body (not JSON-parsed).
-// In app.js: app.use('/billing/webhook', express.raw({ type: 'application/json' }))
 router.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
 
@@ -220,12 +262,13 @@ router.post('/webhook', async (req, res) => {
 
       // ── Payment succeeded → activate plan
       case 'checkout.session.completed': {
-        const session  = event.data.object;
-        const userId   = session.metadata?.userId;
-        const plan     = session.metadata?.plan;
-        const cycle    = session.metadata?.cycle;
+        const session   = event.data.object;
+        const companyId = session.metadata?.companyId;
+        const userId    = session.metadata?.userId;
+        const plan      = session.metadata?.plan;
+        const cycle     = session.metadata?.cycle;
 
-        if (!userId || !plan) {
+        if (!companyId || !plan) {
           console.warn('checkout.session.completed: missing metadata', session.metadata);
           break;
         }
@@ -243,7 +286,7 @@ router.post('/webhook', async (req, res) => {
                status                 = 'active',
                current_period_start   = to_timestamp($6),
                current_period_end     = to_timestamp($7)
-           WHERE user_id = $8`,
+           WHERE company_id = $8`,
           [
             session.customer,
             session.subscription,
@@ -252,27 +295,31 @@ router.post('/webhook', async (req, res) => {
             cycle || 'monthly',
             stripeSub.current_period_start,
             stripeSub.current_period_end,
-            userId
+            companyId
           ]
         );
 
-        // Log
-        await pool.query(
-          `INSERT INTO audit_logs (user_id, action, details)
-           VALUES ($1, 'upgrade', $2)`,
-          [userId, JSON.stringify({ plan, cycle, stripeSubscriptionId: session.subscription })]
-        );
+        // Audit log
+        if (userId) {
+          await pool.query(
+            `INSERT INTO audit_logs (user_id, action, details)
+             VALUES ($1, 'upgrade', $2)`,
+            [userId, JSON.stringify({ plan, cycle, stripeSubscriptionId: session.subscription, companyId })]
+          ).catch(err => console.warn('audit_logs insert failed:', err.message));
+        }
 
-        // Send confirmation email
-        const { rows } = await pool.query(
-          'SELECT email, name FROM users WHERE id = $1', [userId]
-        );
-        if (rows[0]) {
-          await sendEmail(resend, {
-            to: rows[0].email,
-            subject: `AI Shield ${capitalise(plan)} — subscription confirmed ✅`,
-            html: emails.paymentConfirmed(rows[0].name || rows[0].email, plan, cycle)
-          });
+        // Send confirmation email to the user who initiated checkout
+        if (userId) {
+          const { rows } = await pool.query(
+            'SELECT email, name FROM users WHERE id = $1', [userId]
+          );
+          if (rows[0]) {
+            await sendEmail(resend, {
+              to: rows[0].email,
+              subject: `AI Shield ${capitalise(plan)} — subscription confirmed ✅`,
+              html: emails.paymentConfirmed(rows[0].name || rows[0].email, plan, cycle)
+            });
+          }
         }
         break;
       }
@@ -323,6 +370,26 @@ router.post('/webhook', async (req, res) => {
            WHERE stripe_customer_id = $1`,
           [invoice.customer]
         );
+
+        // Send payment failed email to all managers of the company
+        const { rows: subRows } = await pool.query(
+          `SELECT company_id FROM subscriptions WHERE stripe_customer_id = $1 LIMIT 1`,
+          [invoice.customer]
+        );
+        if (subRows[0]) {
+          const { rows: managers } = await pool.query(
+            `SELECT email, name FROM users
+             WHERE company_id = $1 AND role = 'manager' AND is_active = true`,
+            [subRows[0].company_id]
+          );
+          for (const manager of managers) {
+            await sendEmail(resend, {
+              to: manager.email,
+              subject: 'AI Shield — Payment failed, action required',
+              html: emails.paymentFailed(manager.name || manager.email)
+            });
+          }
+        }
         break;
       }
 
@@ -357,7 +424,7 @@ router.post('/webhook', async (req, res) => {
 async function sendEmail(resend, { to, subject, html }) {
   try {
     await resend.emails.send({
-      from: `AI Shield <hello@${process.env.EMAIL_DOMAIN || 'getaishield.eu'}>`,
+      from: `AI Shield <hello@${process.env.EMAIL_DOMAIN || 'getaishield.co'}>`,
       to,
       subject,
       html
