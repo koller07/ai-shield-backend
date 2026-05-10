@@ -158,13 +158,67 @@ app.get('/detections/my', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /detections/team-members - lista de funcionários com contagens reais
+// GET /detections/timeline - dados reais por dia (últimos 7 dias) para o gráfico
+app.get('/detections/timeline', authMiddleware, async (req, res) => {
+  try {
+    const company_id = req.user.company_id;
+
+    // Get count per day for last 7 days, including days with 0 detections
+    const result = await pool.query(
+      `WITH date_series AS (
+         SELECT generate_series(
+           CURRENT_DATE - INTERVAL '6 days',
+           CURRENT_DATE,
+           INTERVAL '1 day'
+         )::date AS day
+       )
+       SELECT
+         to_char(ds.day, 'YYYY-MM-DD') AS day,
+         COUNT(d.id)::int AS count
+       FROM date_series ds
+       LEFT JOIN detections d
+         ON d.detected_at::date = ds.day
+        AND d.company_id = $1
+       GROUP BY ds.day
+       ORDER BY ds.day ASC`,
+      [company_id]
+    );
+
+    res.json({ days: result.rows });
+
+  } catch (err) {
+    console.error('GET /detections/timeline error:', err);
+    res.status(500).json({ error: 'Failed to load timeline' });
+  }
+});
+
+// GET /detections/team-members - lista de funcionários com contagens reais por ação
 app.get('/detections/team-members', authMiddleware, async (req, res) => {
   try {
     const company_id = req.user.company_id;
 
     const result = await pool.query(
-      'SELECT u.id, u.name, u.email, u.created_at, u.last_login, COUNT(d.id) as detection_count FROM users u LEFT JOIN detections d ON u.id = d.user_id AND d.detected_at > NOW() - INTERVAL \'30 days\' WHERE u.company_id = $1 AND u.role = \'employee\' AND u.is_active = true GROUP BY u.id, u.name, u.email, u.created_at, u.last_login ORDER BY detection_count DESC, u.name',
+      `SELECT
+         u.id,
+         u.name,
+         u.email,
+         u.created_at,
+         u.last_login,
+         COUNT(d.id) AS detection_count,
+         COUNT(*) FILTER (WHERE d.employee_action = 'removed')      AS removed_count,
+         COUNT(*) FILTER (WHERE d.employee_action = 'ignored')      AS ignored_count,
+         COUNT(*) FILTER (WHERE d.employee_action = 'sent_anyway')  AS sent_anyway_count,
+         COUNT(*) FILTER (WHERE d.employee_action = 'abandoned')    AS abandoned_count,
+         COUNT(*) FILTER (WHERE d.employee_action = 'detected')     AS pending_count
+       FROM users u
+       LEFT JOIN detections d
+         ON u.id = d.user_id
+        AND d.detected_at > NOW() - INTERVAL '30 days'
+       WHERE u.company_id = $1
+         AND u.role = 'employee'
+         AND u.is_active = true
+       GROUP BY u.id, u.name, u.email, u.created_at, u.last_login
+       ORDER BY detection_count DESC, u.name`,
       [company_id]
     );
 
@@ -174,7 +228,12 @@ app.get('/detections/team-members', authMiddleware, async (req, res) => {
       email: row.email,
       joined: row.created_at,
       last_login: row.last_login,
-      detections: parseInt(row.detection_count || 0)
+      detections:   parseInt(row.detection_count   || 0),
+      removed:      parseInt(row.removed_count     || 0),
+      ignored:      parseInt(row.ignored_count     || 0),
+      sent_anyway:  parseInt(row.sent_anyway_count || 0),
+      abandoned:    parseInt(row.abandoned_count   || 0),
+      pending:      parseInt(row.pending_count     || 0)
     }));
 
     res.json({ members });
