@@ -1,5 +1,6 @@
 // ============================================
-// AI-SHIELD BACKEND — server.js v2
+// AI-SHIELD BACKEND — server.js v3
+// Scenario C audit trail integrated
 // ============================================
 
 const express  = require('express');
@@ -204,29 +205,92 @@ app.get('/detections/all', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /detections - log nova detecção da extensão
+// ════════════════════════════════════════════════════════
+// 🆕 SCENARIO C — Audit trail with status updates
+// ════════════════════════════════════════════════════════
+
+// POST /detections - log nova detecção da extensão (Cenário C)
+// Returns the ID so the extension can update the status later
 app.post('/detections', authMiddleware, async (req, res) => {
   try {
     const user_id = req.user.id;
     const company_id = req.user.company_id;
-    const { platform, dataType, action, urlHost } = req.body;
+    const { platform, dataType, action, urlHost, wasBlocked } = req.body;
 
     if (!platform || !dataType) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
     const month_year = new Date().toISOString().slice(0, 7);
+    const finalAction = action || 'detected';
 
-    await pool.query(
-      'INSERT INTO detections (user_id, company_id, platform, data_type, employee_action, url_host, month_year, detected_at) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())',
-      [user_id, company_id, platform, dataType, action || 'detected', urlHost, month_year]
+    // was_blocked is NULL by default (decision pending)
+    // Only set true when explicitly removed
+    const finalWasBlocked = (finalAction === 'removed') ? true
+                          : (wasBlocked === true) ? true
+                          : null;
+
+    const result = await pool.query(
+      `INSERT INTO detections
+       (user_id, company_id, platform, data_type, employee_action, was_blocked, url_host, month_year, detected_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+       RETURNING id`,
+      [user_id, company_id, platform, dataType, finalAction, finalWasBlocked, urlHost, month_year]
     );
 
-    res.json({ success: true });
+    res.json({
+      success: true,
+      id: result.rows[0].id    // 👈 Returned for Scenario C status updates
+    });
 
   } catch (err) {
     console.error('POST /detections error:', err);
     res.status(500).json({ error: 'Failed to log detection' });
+  }
+});
+
+// PATCH /detections/:id - atualizar ação tomada pelo funcionário
+// Used by Scenario C to update status: 'removed' | 'sent_anyway' | 'ignored' | 'abandoned'
+app.patch('/detections/:id', authMiddleware, async (req, res) => {
+  try {
+    const user_id = req.user.id;
+    const company_id = req.user.company_id;
+    const detectionId = req.params.id;
+    const { action } = req.body;
+
+    // Valid actions for Scenario C audit trail
+    const validActions = ['removed', 'sent_anyway', 'ignored', 'abandoned'];
+    if (!action || !validActions.includes(action)) {
+      return res.status(400).json({
+        error: 'Invalid action',
+        valid: validActions
+      });
+    }
+
+    // was_blocked depends on action: only 'removed' counts as blocked
+    const wasBlocked = (action === 'removed') ? true : false;
+
+    // Security: only update if detection belongs to this user
+    const result = await pool.query(
+      `UPDATE detections
+       SET employee_action = $1,
+           was_blocked = $2
+       WHERE id = $3
+         AND user_id = $4
+         AND company_id = $5
+       RETURNING id`,
+      [action, wasBlocked, detectionId, user_id, company_id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Detection not found or access denied' });
+    }
+
+    res.json({ success: true, id: result.rows[0].id, action });
+
+  } catch (err) {
+    console.error('PATCH /detections/:id error:', err);
+    res.status(500).json({ error: 'Failed to update detection' });
   }
 });
 
@@ -295,8 +359,8 @@ app.get('/api/dashboard/stats', legacyAuth, async (req, res) => {
 });
 
 // Health checks
-app.get('/health',     (_, res) => res.json({ status: 'ok', version: '2.0' }));
-app.get('/api/health', (_, res) => res.json({ status: 'ok', version: '2.0' }));
+app.get('/health',     (_, res) => res.json({ status: 'ok', version: '3.0' }));
+app.get('/api/health', (_, res) => res.json({ status: 'ok', version: '3.0' }));
 
 // ════════════════════════════════════════════════════════
 // CRON + START
@@ -305,9 +369,9 @@ require('./cron');
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🛡️  AI-Shield v2 on port ${PORT}`);
+  console.log(`🛡️  AI-Shield v3 on port ${PORT}`);
   console.log(`   /auth/*       → routes/auth.js`);
   console.log(`   /api/auth/*   → routes/auth.js  (legacy alias)`);
-  console.log(`   /detections/* → inline endpoints`);
+  console.log(`   /detections/* → inline endpoints (Scenario C audit trail)`);
   console.log(`   /billing/*    → routes/billing.js`);
 });
