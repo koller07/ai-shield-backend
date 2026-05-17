@@ -2,13 +2,15 @@
 // routes/billing.js
 // Stripe checkout, customer portal, and webhook handler
 //
+// v3 changes:
+//   - FIX: metadata also added to Checkout Session (not only Subscription)
+//   - FIX: webhook handler falls back to Subscription metadata if Session is empty
+//   - Defensive: works even if old sessions have missing Session metadata
+//
 // Adapted for AI Shield's B2B architecture:
 //   - Subscriptions belong to companies (not users)
 //   - Multiple users can share one subscription
 //   - JWT contains companyId (set by middleware/auth.js)
-//
-// Mount in app.js:
-//   app.use('/billing', require('./routes/billing'))
 //
 // IMPORTANT: The webhook endpoint needs raw body.
 // In app.js, add BEFORE json middleware:
@@ -47,7 +49,6 @@ const PLAN_LIMITS = {
 };
 
 // ─── GET /billing/status ───────────────────────────────────
-// Returns the company's subscription status
 router.get('/status', auth, async (req, res) => {
   try {
     const companyId = req.user.companyId;
@@ -72,7 +73,6 @@ router.get('/status', auth, async (req, res) => {
     const sub = rows[0];
     const now = new Date();
 
-    // Days remaining in trial
     let trialDaysLeft = null;
     if (sub.status === 'trialing' && sub.trial_ends_at) {
       trialDaysLeft = Math.max(
@@ -81,7 +81,6 @@ router.get('/status', auth, async (req, res) => {
       );
     }
 
-    // Count active users in the company
     const { rows: userRows } = await pool.query(
       `SELECT COUNT(*)::int AS count FROM users WHERE company_id = $1 AND is_active = true`,
       [companyId]
@@ -107,8 +106,7 @@ router.get('/status', auth, async (req, res) => {
 });
 
 // ─── POST /billing/checkout ────────────────────────────────
-// Creates a Stripe Checkout Session and returns the redirect URL
-// Body: { plan: 'compliance', cycle: 'annual' }
+// FIX v3: metadata now added to BOTH Checkout Session and Subscription
 router.post('/checkout', auth, async (req, res) => {
   const { plan, cycle } = req.body;
   const companyId = req.user.companyId;
@@ -134,7 +132,6 @@ router.post('/checkout', auth, async (req, res) => {
   }
 
   try {
-    // Get or create Stripe customer for this company
     const { rows } = await pool.query(
       `SELECT stripe_customer_id FROM subscriptions WHERE company_id = $1
        ORDER BY created_at DESC LIMIT 1`,
@@ -144,7 +141,6 @@ router.post('/checkout', auth, async (req, res) => {
     let customerId = rows[0]?.stripe_customer_id;
 
     if (!customerId) {
-      // Get company name for the Stripe customer
       const { rows: companyRows } = await pool.query(
         `SELECT name FROM companies WHERE id = $1`,
         [companyId]
@@ -161,7 +157,6 @@ router.post('/checkout', auth, async (req, res) => {
       });
       customerId = customer.id;
 
-      // Save customer ID immediately
       await pool.query(
         `UPDATE subscriptions SET stripe_customer_id = $1
          WHERE company_id = $2`,
@@ -169,25 +164,28 @@ router.post('/checkout', auth, async (req, res) => {
       );
     }
 
+    // Metadata to be propagated to both Session and Subscription
+    const metadata = {
+      companyId,
+      userId,
+      plan,
+      cycle
+    };
+
     const session = await stripe.checkout.sessions.create({
       customer:             customerId,
       mode:                 'subscription',
       payment_method_types: ['card'],
       line_items: [{ price: priceId, quantity: 1 }],
       allow_promotion_codes: true,
+      metadata,                    // ← FIX: Session metadata (read by checkout.session.completed)
       subscription_data: {
-        metadata: {
-          companyId,
-          userId,
-          plan,
-          cycle
-        }
+        metadata                   // ← Subscription metadata (kept as fallback)
       },
       success_url: `${process.env.FRONTEND_URL}/dashboard?upgraded=true&plan=${plan}`,
       cancel_url:  `${process.env.FRONTEND_URL}/dashboard?canceled=true`,
     });
 
-    // Audit log
     await pool.query(
       `INSERT INTO audit_logs (user_id, action, details)
        VALUES ($1, 'checkout_started', $2)`,
@@ -203,7 +201,6 @@ router.post('/checkout', auth, async (req, res) => {
 });
 
 // ─── POST /billing/portal ──────────────────────────────────
-// Opens Stripe Customer Portal (manage plan, cancel, update card)
 router.post('/portal', auth, async (req, res) => {
   try {
     const companyId = req.user.companyId;
@@ -239,7 +236,7 @@ router.post('/portal', auth, async (req, res) => {
 });
 
 // ─── POST /billing/webhook ─────────────────────────────────
-// Stripe sends events here. Must receive raw body (not JSON-parsed).
+// FIX v3: defensive metadata read - falls back to Subscription if Session metadata missing
 router.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
 
@@ -262,19 +259,32 @@ router.post('/webhook', async (req, res) => {
 
       // ── Payment succeeded → activate plan
       case 'checkout.session.completed': {
-        const session   = event.data.object;
-        const companyId = session.metadata?.companyId;
-        const userId    = session.metadata?.userId;
-        const plan      = session.metadata?.plan;
-        const cycle     = session.metadata?.cycle;
+        const session = event.data.object;
+
+        // Get subscription details from Stripe (always needed)
+        let stripeSub = null;
+        if (session.subscription) {
+          stripeSub = await stripe.subscriptions.retrieve(session.subscription);
+        }
+
+        // FIX v3: Try Session metadata first, fall back to Subscription metadata
+        const sessionMeta = session.metadata || {};
+        const subMeta     = stripeSub?.metadata || {};
+
+        const companyId = sessionMeta.companyId || subMeta.companyId;
+        const userId    = sessionMeta.userId    || subMeta.userId;
+        const plan      = sessionMeta.plan      || subMeta.plan;
+        const cycle     = sessionMeta.cycle     || subMeta.cycle;
 
         if (!companyId || !plan) {
-          console.warn('checkout.session.completed: missing metadata', session.metadata);
+          console.warn('checkout.session.completed: missing metadata in BOTH session and subscription', {
+            sessionMeta,
+            subMeta
+          });
           break;
         }
 
-        // Get subscription details from Stripe
-        const stripeSub = await stripe.subscriptions.retrieve(session.subscription);
+        console.log(`[Stripe webhook] Activating subscription for company ${companyId}, plan ${plan} (${cycle})`);
 
         await pool.query(
           `UPDATE subscriptions
@@ -290,16 +300,17 @@ router.post('/webhook', async (req, res) => {
           [
             session.customer,
             session.subscription,
-            stripeSub.items.data[0]?.price.id,
+            stripeSub?.items.data[0]?.price.id,
             plan,
             cycle || 'monthly',
-            stripeSub.current_period_start,
-            stripeSub.current_period_end,
+            stripeSub?.current_period_start,
+            stripeSub?.current_period_end,
             companyId
           ]
         );
 
-        // Audit log
+        console.log(`[Stripe webhook] BD updated successfully for company ${companyId}`);
+
         if (userId) {
           await pool.query(
             `INSERT INTO audit_logs (user_id, action, details)
@@ -308,7 +319,6 @@ router.post('/webhook', async (req, res) => {
           ).catch(err => console.warn('audit_logs insert failed:', err.message));
         }
 
-        // Send confirmation email to the user who initiated checkout
         if (userId) {
           const { rows } = await pool.query(
             'SELECT email, name FROM users WHERE id = $1', [userId]
@@ -316,9 +326,10 @@ router.post('/webhook', async (req, res) => {
           if (rows[0]) {
             await sendEmail(resend, {
               to: rows[0].email,
-              subject: `AI Shield ${capitalise(plan)} — subscription confirmed ✅`,
+              subject: `AI Shield ${capitalise(plan)} — subscription confirmed`,
               html: emails.paymentConfirmed(rows[0].name || rows[0].email, plan, cycle)
             });
+            console.log(`[Stripe webhook] Confirmation email sent to ${rows[0].email}`);
           }
         }
         break;
@@ -371,7 +382,6 @@ router.post('/webhook', async (req, res) => {
           [invoice.customer]
         );
 
-        // Send payment failed email to all managers of the company
         const { rows: subRows } = await pool.query(
           `SELECT company_id FROM subscriptions WHERE stripe_customer_id = $1 LIMIT 1`,
           [invoice.customer]
@@ -407,7 +417,6 @@ router.post('/webhook', async (req, res) => {
       }
 
       default:
-        // Unhandled event — ignore
         break;
     }
 
@@ -415,7 +424,6 @@ router.post('/webhook', async (req, res) => {
 
   } catch (err) {
     console.error(`[Stripe webhook] Error processing ${event.type}:`, err);
-    // Return 200 so Stripe doesn't retry — log for manual review
     res.json({ received: true, warning: 'Processing error logged' });
   }
 });
