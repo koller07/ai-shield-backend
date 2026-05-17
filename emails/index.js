@@ -1,6 +1,10 @@
 // ============================================================
 // emails/index.js
 // All transactional email HTML templates — responsive + branded
+//
+// v2 changes:
+//   - welcome() now includes company code prominently
+//   - NEW: employeeWelcome() for when employee joins via code
 // ============================================================
 
 const LOGO_URL = 'https://www.getaishield.co/logo_full.png';
@@ -20,7 +24,6 @@ const BASE = `<!DOCTYPE html>
   table { border-collapse: collapse; }
   img { border: 0; display: block; max-width: 100%; height: auto; }
 
-  /* Mobile responsive — adjusts text sizes and stacks columns */
   @media only screen and (max-width: 600px) {
     .email-wrapper { padding: 16px 12px !important; }
     .email-container { border-radius: 12px !important; }
@@ -28,14 +31,12 @@ const BASE = `<!DOCTYPE html>
     .email-header { padding: 22px 18px 0 18px !important; }
     .email-footer { padding: 0 18px 22px 18px !important; }
 
-    /* Typography scaling */
     .h1 { font-size: 19px !important; line-height: 1.3 !important; }
     .h2 { font-size: 14px !important; }
     .body-text { font-size: 14px !important; }
     .small-text { font-size: 12px !important; }
     .quote-text { font-size: 13px !important; line-height: 1.55 !important; }
 
-    /* Stat cards stack vertically on mobile */
     .stat-row { display: block !important; }
     .stat-cell {
       display: block !important;
@@ -45,11 +46,9 @@ const BASE = `<!DOCTYPE html>
     }
     .stat-value { font-size: 22px !important; }
 
-    /* Plan card */
     .plan-name { font-size: 18px !important; }
     .plan-price { font-size: 22px !important; }
 
-    /* Buttons full-width on mobile */
     .button-table { width: 100% !important; }
     .button-link {
       display: block !important;
@@ -59,7 +58,6 @@ const BASE = `<!DOCTYPE html>
       font-size: 14px !important;
     }
 
-    /* Footer stacks */
     .footer-cell-left,
     .footer-cell-right {
       display: block !important;
@@ -69,16 +67,15 @@ const BASE = `<!DOCTYPE html>
     }
     .footer-cell-right { padding-top: 12px !important; }
 
-    /* Onboarding steps */
     .step-number { width: 22px !important; height: 22px !important; line-height: 22px !important; font-size: 11px !important; }
     .step-title { font-size: 13px !important; }
     .step-desc { font-size: 12px !important; line-height: 1.5 !important; }
 
-    /* Tables (pricing, payment summary) */
     .table-cell { padding: 10px 12px !important; font-size: 13px !important; }
 
-    /* Pricing list emoji block */
     .info-block { padding: 12px 14px !important; }
+
+    .code-display { font-size: 26px !important; padding: 18px !important; }
   }
 </style>
 </head>
@@ -177,6 +174,7 @@ function alertBanner(text, type = 'warning') {
   const styles = {
     warning: { bg: '#FFF8E1', border: '#FFD54F', color: '#7A5800' },
     danger:  { bg: '#FEE4E2', border: '#FFA48E', color: '#9B2226' },
+    success: { bg: '#ECFDF5', border: '#A7F3D0', color: '#065F46' },
   };
   const s = styles[type] || styles.warning;
   return `
@@ -203,24 +201,53 @@ function statCard(value, label, color = '#0052CC') {
   `;
 }
 
+// Code block display (for company code)
+function codeBlock(code) {
+  return `
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%"
+           style="background:#F7F8FA;border:2px dashed #C8D6F0;border-radius:12px;
+                  border-spacing:0;margin:0 0 20px 0;">
+      <tr><td style="padding:22px;text-align:center;">
+        <div style="font-family:-apple-system,sans-serif;
+                    font-size:11px;color:#9CA3AF;font-weight:600;
+                    letter-spacing:.1em;text-transform:uppercase;margin-bottom:10px;">
+          Company Code
+        </div>
+        <div class="code-display"
+             style="font-family:'Syne',Menlo,Monaco,monospace;
+                    font-size:32px;font-weight:800;color:#0052CC;
+                    letter-spacing:.14em;line-height:1;">
+          ${code}
+        </div>
+        <div style="font-family:-apple-system,sans-serif;
+                    font-size:12px;color:#6B7280;margin-top:12px;line-height:1.5;">
+          Share this code with your team to activate the extension
+        </div>
+      </td></tr>
+    </table>
+  `;
+}
+
 // ──────────────────────────────────────────────────────────
 // EMAIL TEMPLATES
 // ──────────────────────────────────────────────────────────
 
-function welcome(nameOrEmail) {
+function welcome(nameOrEmail, companyCode) {
   const name = nameOrEmail.includes('@') ? nameOrEmail.split('@')[0] : nameOrEmail;
   return wrap(`
     ${h1('Your 14-day trial has started 🛡️')}
     ${p(`Hi ${name}, welcome to AI Shield.`)}
     ${p(`Your team is now protected from accidental data leaks to ChatGPT, Claude, Gemini and 25+ AI tools. Every sensitive data event is logged, blocked, and ready for your GDPR audit trail.`)}
 
-    ${h2('Here\'s what to do next:')}
+    ${companyCode ? codeBlock(companyCode) : ''}
+
+    ${h2(`Here's what to do next:`)}
 
     <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin-bottom:24px;">
       ${[
-        ['1', 'Install the Chrome extension', 'Less than 60 seconds. No IT team required.'],
-        ['2', 'Open your dashboard', 'See detections in real-time as your team uses AI tools.'],
-        ['3', 'Review your compliance status', 'Get ready for the EU AI Act deadline.']
+        ['1', 'Share your Company Code', 'Send the code above to your team members so they can install the extension.'],
+        ['2', 'Install the Chrome extension', 'Each team member installs in under 60 seconds. No IT team required.'],
+        ['3', 'Open your dashboard', 'See detections in real-time as your team uses AI tools.']
       ].map(([num, title, desc], i, arr) => `
       <tr><td style="padding:10px 0;${i < arr.length - 1 ? 'border-bottom:1px solid #E3E8EF;' : ''}">
         <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
@@ -244,6 +271,60 @@ function welcome(nameOrEmail) {
 
     ${btn('Open Dashboard →', `${APP_URL}/dashboard`)}
     ${pSmall('Your trial ends in 14 days. No charge until you choose a plan.')}
+  `);
+}
+
+function employeeWelcome(nameOrEmail, companyName) {
+  const name = nameOrEmail.includes('@') ? nameOrEmail.split('@')[0] : nameOrEmail;
+  return wrap(`
+    ${alertBanner('✓ Your AI Shield protection is active', 'success')}
+
+    ${h1(`You're protected, ${name}.`)}
+    ${p(`You've successfully joined <strong style="color:#0D1117;">${companyName}</strong> on AI Shield. Your Chrome extension is now active and will protect you when using AI tools at work.`)}
+
+    ${h2('How AI Shield protects you:')}
+
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin-bottom:24px;">
+      ${[
+        ['🔍', 'Real-time scanning', 'When you type in ChatGPT, Claude, Gemini or 25+ AI tools, AI Shield checks for sensitive data before it leaves your browser.'],
+        ['⚠️', 'Smart alerts', 'If you accidentally include a credit card, IBAN, API key, or other sensitive data, you\'ll see an alert with one click to remove it.'],
+        ['🛡️', 'Privacy-first', 'AI Shield never reads or stores the content of your AI conversations. Only detections and your actions are logged for compliance.']
+      ].map(([icon, title, desc], i, arr) => `
+      <tr><td style="padding:12px 0;${i < arr.length - 1 ? 'border-bottom:1px solid #E3E8EF;' : ''}">
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+          <tr>
+            <td valign="top" style="width:32px;font-size:20px;line-height:1;padding-top:2px;">
+              ${icon}
+            </td>
+            <td style="padding-left:10px;">
+              <div class="step-title" style="font-size:14px;font-weight:600;color:#0D1117;
+                          font-family:-apple-system,sans-serif;margin-bottom:2px;">${title}</div>
+              <div class="step-desc" style="font-size:13px;color:#6B7280;line-height:1.55;
+                          font-family:-apple-system,sans-serif;">${desc}</div>
+            </td>
+          </tr>
+        </table>
+      </td></tr>
+      `).join('')}
+    </table>
+
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%"
+           style="background:#F7F8FA;border-left:3px solid #0052CC;border-radius:0 8px 8px 0;
+                  border-spacing:0;margin:0 0 24px 0;">
+      <tr><td class="info-block" style="padding:16px 18px;">
+        <p class="small-text" style="margin:0;font-family:-apple-system,sans-serif;
+                  font-size:12px;font-weight:700;color:#0D1117;
+                  text-transform:uppercase;letter-spacing:0.07em;margin-bottom:6px;">
+          Quick tip
+        </p>
+        <p class="body-text" style="margin:0;font-family:-apple-system,sans-serif;
+                  font-size:13px;color:#3A4250;line-height:1.6;">
+          When the AI Shield alert appears, take a moment to review what triggered it. Click <strong style="color:#0D1117;">"Remove data"</strong> if it's something sensitive — your compliance team will thank you.
+        </p>
+      </td></tr>
+    </table>
+
+    ${pSmall(`Questions about AI Shield? Reach out to your manager at ${companyName}, or visit <a href="${APP_URL}" style="color:#0052CC;">getaishield.co</a>.`)}
   `);
 }
 
@@ -531,6 +612,7 @@ function paymentFailed(nameOrEmail) {
 
 module.exports = {
   welcome,
+  employeeWelcome,
   trialDay7Checkin,
   trialAddPayment,
   trialEnding,
