@@ -1,6 +1,11 @@
 // ================================================================
-// routes/auth.js — v3
+// routes/auth.js — v4
 // Separação Manager vs Funcionário
+//
+// CHANGES v4:
+//   - welcome email now uses emails.welcome() (branded design)
+//   - employee/join now sends emails.employeeWelcome() (new branded email)
+//   - removed inline welcomeEmail() function
 //
 // CHANGES v3:
 //   - signup now accepts and stores `plan` and `cycle` from signup.html
@@ -20,6 +25,7 @@ const jwt      = require('jsonwebtoken');
 const { Pool } = require('pg');
 const { Resend } = require('resend');
 const auth     = require('../middleware/auth');
+const emails   = require('../emails');
 const router   = express.Router();
 
 const pool   = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -90,9 +96,9 @@ router.post('/signup', async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Email de boas-vindas
+    // Email de boas-vindas (branded, with company code)
     await sendEmail(email, 'Welcome to AI Shield — your 14-day trial has started',
-      welcomeEmail(user.name, company.company_code)
+      emails.welcome(user.name, company.company_code)
     );
 
     // JWT
@@ -241,6 +247,11 @@ router.post('/employee/join', async (req, res) => {
 
     await client.query('COMMIT');
 
+    // Email de boas-vindas ao funcionário (branded)
+    await sendEmail(email, `Welcome to AI Shield — you're protected at ${company.name}`,
+      emails.employeeWelcome(user.name, company.name)
+    );
+
     const token = signToken(user, company);
 
     res.status(201).json({
@@ -378,34 +389,6 @@ async function sendEmail(to, subject, html) {
   } catch (err) {
     console.error('Email send failed:', err.message);
   }
-}
-
-function welcomeEmail(name, companyCode) {
-  return `
-    <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:40px 32px">
-      <h1 style="font-size:22px;font-weight:800;color:#0D1117;margin:0 0 12px">
-        🛡️ Your 14-day trial has started.
-      </h1>
-      <p style="color:#3A4250;font-size:15px;line-height:1.65;margin:0 0 16px">
-        Hi ${name}, welcome to AI Shield.
-      </p>
-      <p style="color:#3A4250;font-size:15px;line-height:1.65;margin:0 0 24px">
-        Share this code with your team so they can activate the Chrome extension:
-      </p>
-      <div style="background:#F7F8FA;border:2px dashed #E3E8EF;border-radius:12px;
-                  padding:20px;text-align:center;margin-bottom:24px">
-        <div style="font-size:11px;color:#9CA3AF;font-weight:600;letter-spacing:.1em;
-                    text-transform:uppercase;margin-bottom:8px">Company Code</div>
-        <div style="font-size:32px;font-weight:800;color:#0052CC;letter-spacing:.12em;
-                    font-family:monospace">${companyCode}</div>
-      </div>
-      <a href="https://getaishield.co/dashboard.html"
-         style="display:inline-block;background:#0052CC;color:white;font-weight:600;
-                padding:12px 24px;border-radius:8px;text-decoration:none;font-size:14px">
-        Open Dashboard →
-      </a>
-    </div>
-  `;
 }
 
 module.exports = router;
