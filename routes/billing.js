@@ -182,8 +182,8 @@ router.post('/checkout', auth, async (req, res) => {
       subscription_data: {
         metadata                   // ← Subscription metadata (kept as fallback)
       },
-      success_url: `${process.env.FRONTEND_URL}/dashboard?upgraded=true&plan=${plan}`,
-      cancel_url:  `${process.env.FRONTEND_URL}/dashboard?canceled=true`,
+      success_url: `${process.env.FRONTEND_URL}/dashboard.html#billing?upgraded=true&plan=${plan}`,
+cancel_url:  `${process.env.FRONTEND_URL}/dashboard.html#billing?canceled=true`,
     });
 
     await pool.query(
