@@ -2,9 +2,16 @@
 // emails/index.js
 // All transactional email HTML templates — responsive + branded
 //
-// v2 changes:
-//   - welcome() now includes company code prominently
-//   - NEW: employeeWelcome() for when employee joins via code
+// // Version: 3.0.0  ← NEW (deep linking support)
+//
+/**
+ * AI Shield — Email Templates v3.0.0
+ * 
+ * v3.0.0 changes:
+ * - All dashboard links now use deep linking (#hash)
+ * - /dashboard/billing → /dashboard.html#billing
+ * - /dashboard → /dashboard.html
+ */
 // ============================================================
 
 const LOGO_URL = 'https://www.getaishield.co/logo_full.png';
@@ -269,7 +276,7 @@ function welcome(nameOrEmail, companyCode) {
       `).join('')}
     </table>
 
-    ${btn('Open Dashboard →', `${APP_URL}/dashboard`)}
+    ${btn('Open Dashboard →', `${APP_URL}/dashboard.html`)}
     ${pSmall('Your trial ends in 14 days. No charge until you choose a plan.')}
   `);
 }
@@ -356,7 +363,7 @@ function trialDay7Checkin(nameOrEmail, stats = {}) {
       <li>Customise detection rules for your industry</li>
     </ul>
 
-    ${btn('Open Dashboard →', `${APP_URL}/dashboard`)}
+    ${btn('Open Dashboard →', `${APP_URL}/dashboard.html`)}
     ${pSmall(`Questions? Reply to this email or <a href="https://cal.com/ai-shield/onboarding" style="color:#0052CC;">book a 15-min call</a>.`)}
   `);
 }
@@ -416,7 +423,7 @@ function trialAddPayment(nameOrEmail, plan = 'compliance', daysLeft = 3) {
       <li><strong style="color:#0D1117;">Cancel anytime</strong> — no long contracts, no lock-in</li>
     </ul>
 
-    ${btn('Add Payment Method →', `${APP_URL}/dashboard/billing`)}
+    ${btn('Add Payment Method →', `${APP_URL}/dashboard.html#billing`)}
     ${pSmall(`Want a different plan? <a href="${APP_URL}/pricing" style="color:#0052CC;">Compare plans</a>`)}
   `);
 }
@@ -489,7 +496,7 @@ function trialEndingTomorrow(nameOrEmail) {
 
     ${p('Add a payment method now and you won\'t be charged until your trial ends. <strong style="color:#0D1117;">Cancel anytime, no questions asked.</strong>')}
 
-    ${btn('Keep My Protection Active →', `${APP_URL}/dashboard/billing`)}
+    ${btn('Keep My Protection Active →', `${APP_URL}/dashboard.html#billing`)}
 
     <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%"
            style="background:#F7F8FA;border-left:3px solid #0052CC;border-radius:0 8px 8px 0;
@@ -591,8 +598,8 @@ function paymentConfirmed(nameOrEmail, plan, cycle) {
 
     ${p('Your team is fully protected. GDPR audit reports are available in your dashboard anytime.')}
 
-    ${btn('Open Dashboard →', `${APP_URL}/dashboard`)}
-    ${pSmall(`To manage your subscription, update your card, or cancel — <a href="${APP_URL}/dashboard/billing" style="color:#0052CC;">visit billing settings</a>.`)}
+    ${btn('Open Dashboard →', `${APP_URL}/dashboard.html`)}
+    ${pSmall(`To manage your subscription, update your card, or cancel — <a href="${APP_URL}/dashboard.html#billing" style="color:#0052CC;">visit billing settings</a>.`)}
   `);
 }
 
@@ -605,7 +612,7 @@ function paymentFailed(nameOrEmail) {
     ${p(`Hi ${name}, your AI Shield payment didn't go through.`)}
     ${p(`Your subscription is currently on hold. Please update your payment method to reactivate protection for your team.`)}
 
-    ${btn('Update payment method →', `${APP_URL}/dashboard/billing`)}
+    ${btn('Update payment method →', `${APP_URL}/dashboard.html#billing`)}
     ${pSmall('We\'ll retry the payment automatically. If it fails again, your subscription will be cancelled.')}
   `);
 }
