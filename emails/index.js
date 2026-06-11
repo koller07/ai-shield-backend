@@ -6,8 +6,7 @@
 //
 /**
  * AI Shield — Email Templates v3.0.0
- * 
- * v3.0.0 changes:
+ * * v3.0.0 changes:
  * - All dashboard links now use deep linking (#hash)
  * - /dashboard/billing → /dashboard.html#billing
  * - /dashboard → /dashboard.html
@@ -16,6 +15,7 @@
 
 const LOGO_URL = 'https://www.getaishield.co/logo_full.png';
 const APP_URL  = 'https://getaishield.co';
+const CHROME_STORE_URL = 'https://chromewebstore.google.com/detail/ai-shield-compliance-audi/chefkknkoninpbplimnaekjldgjgipnj';
 
 // ─── BASE TEMPLATE — Responsive + brand-aligned ───────────
 const BASE = `<!DOCTYPE html>
@@ -99,18 +99,15 @@ const BASE = `<!DOCTYPE html>
        style="max-width:600px;width:100%;background:#ffffff;border-radius:14px;
               box-shadow:0 2px 8px rgba(0,0,0,0.04);overflow:hidden;">
 
-<!-- Header -->
 <tr><td class="email-header" style="padding:32px 36px 0 36px;">
   <img src="${LOGO_URL}" alt="AI Shield"
        style="height:30px;display:block;border:0;">
 </td></tr>
 
-<!-- Body -->
 <tr><td class="email-body" style="padding:24px 36px 32px 36px;">
 {{BODY}}
 </td></tr>
 
-<!-- Footer -->
 <tr><td class="email-footer" style="padding:0 36px 32px 36px;">
   <hr style="border:none;border-top:1px solid #E3E8EF;margin:0 0 18px 0;">
   <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
@@ -253,7 +250,7 @@ function welcome(nameOrEmail, companyCode) {
     <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin-bottom:24px;">
       ${[
         ['1', 'Share your Company Code', 'Send the code above to your team members so they can install the extension.'],
-        ['2', 'Install the Chrome extension', 'Each team member installs in under 60 seconds. No IT team required.'],
+        ['2', 'Install the Chrome extension', `Each team member can <a href="${CHROME_STORE_URL}" style="color:#0052CC; text-decoration:underline;">install the extension here</a> in under 60 seconds. No IT team required.`],
         ['3', 'Open your dashboard', 'See detections in real-time as your team uses AI tools.']
       ].map(([num, title, desc], i, arr) => `
       <tr><td style="padding:10px 0;${i < arr.length - 1 ? 'border-bottom:1px solid #E3E8EF;' : ''}">
