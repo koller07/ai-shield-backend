@@ -58,10 +58,12 @@ function authMiddleware(req, res, next) {
 // ════════════════════════════════════════════════════════
 const authRouter       = require('./routes/auth');
 const billingRouter    = require('./routes/billing');
+const adminRouter      = require('./routes/admin');
 
 // Endpoints novos (signup.html e popup.js v2 usam estes)
 app.use('/auth',       authRouter);
 app.use('/billing',    billingRouter);
+app.use('/api/admin',  adminRouter); 
 
 // Alias legado — o dashboard antigo ainda chama /api/auth/*
 app.use('/api/auth',   authRouter);
