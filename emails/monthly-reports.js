@@ -20,12 +20,65 @@ function managerMonthlyReport(managerName, companyName, month, stats) {
     topDataTypes      = [],
     byEmployee        = [],
     topPlatforms      = [],
+    previousDetections = null,
   } = stats;
 
   const monthLabel  = formatMonth(month);
   const blockRate   = totalDetections > 0
     ? Math.round((totalBlocked / totalDetections) * 100)
     : 0;
+
+  // Thousands separator helper
+  const fmtNum = (n) => Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+  // ── Trend vs previous month (shown only if previousDetections is provided) ──
+  let trendBlock = '';
+  if (typeof previousDetections === 'number' && previousDetections >= 0) {
+    const diff = totalDetections - previousDetections;
+    if (diff === 0) {
+      trendBlock = `
+    <div style="background:#F7F8FA;border-radius:8px;padding:11px 16px;margin:0 0 24px 0;
+                font-family:-apple-system,sans-serif;font-size:13px;color:#6B7280;">
+      No change from last month (${previousDetections} detection${previousDetections !== 1 ? 's' : ''}).
+    </div>`;
+    } else {
+      const down    = diff < 0;
+      const pct     = previousDetections > 0 ? Math.round(Math.abs(diff) / previousDetections * 100) : null;
+      const color   = down ? '#059669' : '#D97706';
+      const bg      = down ? '#ECFDF5' : '#FFFBEB';
+      const arrow   = down ? '&#9660;' : '&#9650;';
+      const word    = down ? 'fewer' : 'more';
+      const measure = pct !== null ? `${pct}% ${word}` : `${Math.abs(diff)} ${word}`;
+      trendBlock = `
+    <div style="background:${bg};border-radius:8px;padding:11px 16px;margin:0 0 24px 0;
+                font-family:-apple-system,sans-serif;font-size:13px;color:#0D1117;">
+      <span style="color:${color};font-weight:700;">${arrow} ${measure}</span>
+      than last month (was ${previousDetections}).
+    </div>`;
+    }
+  }
+
+  // ── Estimated exposure mitigated (illustrative, not a guarantee) ──
+  const AVG_INCIDENT_VALUE = 5000; // illustrative average cost per prevented incident
+  const exposureMitigated  = totalBlocked * AVG_INCIDENT_VALUE;
+  const exposureBlock = totalBlocked > 0 ? `
+    <div style="background:#ECFDF5;border:1px solid rgba(5,150,105,0.25);
+                border-radius:10px;padding:18px 20px;margin:0 0 28px 0;">
+      <div style="font-family:-apple-system,sans-serif;font-size:11px;font-weight:700;
+                  color:#059669;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">
+        Estimated exposure mitigated
+      </div>
+      <div style="font-family:'Syne',-apple-system,sans-serif;font-size:30px;font-weight:800;
+                  color:#059669;line-height:1;letter-spacing:-0.02em;">
+        &euro;${fmtNum(exposureMitigated)}
+      </div>
+      <p style="font-family:-apple-system,sans-serif;font-size:11.5px;color:#6B7280;
+                margin:10px 0 0 0;line-height:1.5;">
+        Illustrative estimate: ${totalBlocked} blocked exposure${totalBlocked !== 1 ? 's' : ''}
+        &times; &euro;${fmtNum(AVG_INCIDENT_VALUE)} average cost per prevented incident.
+        Actual GDPR penalties can reach &euro;20M or 4% of global annual turnover.
+      </p>
+    </div>` : '';
 
   // Top data types rows
   const typeRows = topDataTypes.slice(0, 5).map((t, i) => `
@@ -156,7 +209,7 @@ function managerMonthlyReport(managerName, companyName, month, stats) {
         </td>
       </tr>
     </table>
-
+${trendBlock}
     <!-- Block rate bar -->
     <div style="margin-bottom:28px;">
       <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%"
@@ -172,6 +225,7 @@ function managerMonthlyReport(managerName, companyName, month, stats) {
         <div style="height:100%;width:${blockRate}%;background:#059669;border-radius:100px;"></div>
       </div>
     </div>
+${exposureBlock}
 
     ${topDataTypes.length > 0 ? `
     <!-- Top data types -->
@@ -219,6 +273,10 @@ function managerMonthlyReport(managerName, companyName, month, stats) {
     </table>` : ''}
 
     <!-- CTA -->
+    <p style="font-family:-apple-system,sans-serif;font-size:14px;color:#0D1117;
+              margin:0 0 12px 0;line-height:1.6;font-weight:600;">
+      Review every detection and keep your audit trail ready for your DPO.
+    </p>
     <table role="presentation" cellspacing="0" cellpadding="0" border="0"
            style="margin:0 0 28px 0;">
       <tr><td style="border-radius:8px;background:#0052CC;">
@@ -228,7 +286,7 @@ function managerMonthlyReport(managerName, companyName, month, stats) {
                   font-weight:600;font-size:14px;padding:13px 26px;
                   border-radius:8px;text-decoration:none;
                   border:1px solid #0052CC;">
-          View full dashboard →
+          Review the full audit trail →
         </a>
       </td></tr>
     </table>
